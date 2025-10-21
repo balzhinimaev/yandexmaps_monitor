@@ -1,0 +1,40 @@
+{
+  "name": "yandex-maps-monitor-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p .",
+    "run:once": "node dist/index.js --once",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "type-check": "tsc --noEmit",
+    "check": "npm run format:check && npm run lint && npm run type-check",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.5",
+    "fast-xml-parser": "^4.5.0",
+    "geolib": "^3.3.4",
+    "node-cron": "^3.0.3",
+    "p-limit": "^5.0.0",
+    "telegraf": "^4.16.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/node-cron": "^3.0.11",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
+}

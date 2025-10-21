@@ -1,0 +1,21 @@
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Cache
+.cache/
+.eslintcache
+
+# Data
+data/
+
+# Logs
+*.log
+

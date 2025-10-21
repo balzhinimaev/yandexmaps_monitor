@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yandex-maps-monitor
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
