@@ -1,0 +1,3 @@
+[submodule "kvansum-api"]
+	path = kvansum-api
+	url = https://github.com/balzhinimaev/kvansum-backend
