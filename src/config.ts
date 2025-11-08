@@ -5,6 +5,7 @@ const Env = z.object({
     TELEGRAM_BOT_TOKEN: z.string().min(10),
     TELEGRAM_CHAT_ID: z.string(),
     YANDEX_API_KEY: z.string().min(10),
+    BROWSER_HEADLESS: z.string().default("true"),
     YMAPS_LANG: z.string().default("ru_RU"),
     YMAPS_RESULTS: z.coerce.number().int().min(1).max(50).default(5),
     YMAPS_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(8),

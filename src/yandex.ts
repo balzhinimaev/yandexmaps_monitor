@@ -1,128 +1,318 @@
 import axios from "axios";
+import { chromium, Browser, BrowserContext, Page } from "playwright";
+import { promises as fs } from "fs";
 import { getDistance } from "geolib";
 import { env } from "./config.js";
 
-export type YOrg = {
-    id?: string; // CompanyMetaData.id
-    name?: string;
+let browser: Browser | null = null;
+let context: BrowserContext | null = null;
+
+const AUTH_STATE_PATH = "./data/auth-state.json";
+
+const YMAPS_SEARCH_URL = "https://search-maps.yandex.ru/v1/";
+
+export type CandidateHoursInterval = {
+    from: string;
+    to: string;
+    days?: string[];
+    everyday?: boolean;
+};
+
+export type SearchCandidate = {
+    id?: string;
+    name: string;
     address?: string;
     lat: number;
     lon: number;
+    distance: number;
+    url?: string;
     hoursText?: string;
-    hoursAvail?: any;
-    url?: string; // ссылка на карточку в картах
+    hoursAvail?: CandidateHoursInterval[];
+    raw?: unknown;
 };
 
-export async function searchCandidates(opts: { lat: number; lon: number; address: string; queryName?: string }) {
-    const { lat, lon, address, queryName = "" } = opts;
-    const base = "https://search-maps.yandex.ru/v1";
-    const common = {
-        apikey: env.YANDEX_API_KEY,
-        type: "biz",
-        lang: env.YMAPS_LANG,
-        results: env.YMAPS_RESULTS,
-    } as const;
+export type SearchParams = {
+    lat: number;
+    lon: number;
+    address?: string;
+    queryName: string;
+};
 
-    console.log(`\n🔍 Поиск организации:`);
-    console.log(`  Адрес: ${address}`);
-    console.log(`  Координаты: ${lat}, ${lon}`);
-    console.log(`  Название: ${queryName || "(не указано)"}`);
-
-    // 1) По адресу (надежнее текстового совпадения)
-    const byAddrParams = { ...common, text: address };
-    console.log(`\n📍 Запрос 1 (по адресу):`);
-    console.log(`  URL: ${base}`);
-    console.log(`  Params:`, JSON.stringify(byAddrParams, null, 2));
-
-    const byAddr = await axios
-        .get(base, {
-            params: byAddrParams,
+export async function searchCandidates(params: SearchParams): Promise<SearchCandidate[]> {
+    try {
+        const response = await axios.get(YMAPS_SEARCH_URL, {
+            params: {
+                apikey: env.YANDEX_API_KEY,
+                lang: env.YMAPS_LANG,
+                results: env.YMAPS_RESULTS,
+                rspn: 1,
+                ll: `${params.lon},${params.lat}`,
+                type: "biz",
+                text: `${params.queryName} ${params.address ?? ""}`.trim(),
+                spn: "0.02,0.02",
+            },
             timeout: env.HTTP_TIMEOUT_MS,
-        })
-        .then((r) => {
-            console.log(`  ✅ Ответ: найдено ${r.data?.features?.length || 0} объектов`);
-            if (r.data?.features?.length > 0) {
-                console.log(`  Первый результат:`, JSON.stringify(r.data.features[0]?.properties?.name, null, 2));
-            }
-            return r.data;
-        })
-        .catch((err) => {
-            console.log(`  ❌ Ошибка:`, err.response?.status, err.response?.data || err.message);
-            return null;
         });
 
-    // 2) По координатам + опционально по названию
-    const byGeoParams = {
-        ...common,
-        ll: `${lon},${lat}`,
-        spn: "0.005,0.005",
-        text: queryName || address,
-    };
-    console.log(`\n📍 Запрос 2 (по координатам):`);
-    console.log(`  URL: ${base}`);
-    console.log(`  Params:`, JSON.stringify(byGeoParams, null, 2));
+        const features: any[] = response.data?.features ?? [];
 
-    const byGeo = await axios
-        .get(base, {
-            params: byGeoParams,
-            timeout: env.HTTP_TIMEOUT_MS,
-        })
-        .then((r) => {
-            console.log(`  ✅ Ответ: найдено ${r.data?.features?.length || 0} объектов`);
-            if (r.data?.features?.length > 0) {
-                console.log(`  Первый результат:`, JSON.stringify(r.data.features[0]?.properties?.name, null, 2));
-            }
-            return r.data;
-        })
-        .catch((err) => {
-            console.log(`  ❌ Ошибка:`, err.response?.status, err.response?.data || err.message);
-            return null;
+        const candidates: SearchCandidate[] = features
+            .map((feature) => toCandidate(feature, params))
+            .filter((c): c is SearchCandidate => Boolean(c))
+            .sort((a, b) => a.distance - b.distance);
+
+        console.log(`🔍 Найдено кандидатов: ${candidates.length}`);
+        candidates.slice(0, 3).forEach((cand, idx) => {
+            console.log(
+                `   [${idx + 1}] ${cand.name} — ${cand.address || "(адрес не указан)"} (${Math.round(cand.distance)} м)`
+            );
         });
 
-    const features = [...(byAddr?.features || []), ...(byGeo?.features || [])];
-    console.log(`\n📊 Всего найдено уникальных объектов: ${features.length}`);
-
-    // Приводим к удобному виду + сортируем по дистанции
-    const uniq = new Map<string, string>();
-    const items: YOrg[] = [];
-    for (const f of features) {
-        const p = f.properties || {};
-        const g = f.geometry || {};
-        const id = p.CompanyMetaData?.id || p.id || f.id || `${g.coordinates}`;
-        if (uniq.has(id)) continue;
-        uniq.set(id, "1");
-        const [lon0, lat0] = g.coordinates || [null, null];
-        const _distance = lat0 && lon0 ? getDistance({ latitude: lat, longitude: lon }, { latitude: lat0, longitude: lon0 }) : 999999;
-        items.push({
-            id,
-            name: p.name,
-            address: p.description || p.CompanyMetaData?.address,
-            lat: lat0,
-            lon: lon0,
-            hoursText: p.CompanyMetaData?.Hours?.text,
-            hoursAvail: p.CompanyMetaData?.Hours?.Availabilities,
-            url: p.CompanyMetaData?.url,
-        } as YOrg & { distance: number });
+        return candidates;
+    } catch (error: any) {
+        console.error("❌ Ошибка поиска в Яндекс.Картах:", error?.message || error);
+        return [];
     }
-    // @ts-ignore
-    items.sort((a, b) => (a.distance || 0) - (b.distance || 0));
-    return items;
 }
 
-export function pickBest(cands: YOrg[], lat: number, lon: number) {
-    console.log(`\n🎯 Выбор лучшего кандидата (макс. расстояние: ${env.MAX_DISTANCE_METERS}м):`);
-    console.log(`  Всего кандидатов: ${cands.length}`);
+export function pickBest(candidates: SearchCandidate[], lat: number, lon: number): SearchCandidate | undefined {
+    if (!candidates.length) return undefined;
+    const sorted = [...candidates].sort((a, b) => a.distance - b.distance);
+    const within = sorted.find((c) => c.distance <= env.MAX_DISTANCE_METERS);
+    if (within) return within;
+    // пересчитаем расстояние относительно переданных координат, если вдруг кандидаты были получены без дистанции
+    sorted.forEach((cand) => {
+        cand.distance = getDistance(
+            { latitude: lat, longitude: lon },
+            { latitude: cand.lat, longitude: cand.lon }
+        );
+    });
+    return sorted.sort((a, b) => a.distance - b.distance)[0];
+}
 
-    // Первая, попавшая в радиус
-    for (const c of cands) {
-        const d = getDistance({ latitude: lat, longitude: lon }, { latitude: c.lat, longitude: c.lon });
-        console.log(`  - "${c.name}" (${c.address}): ${d}м от цели`);
-        if (d <= env.MAX_DISTANCE_METERS) {
-            console.log(`    ✅ Подходит! (в пределах ${env.MAX_DISTANCE_METERS}м)`);
-            return c;
+function toCandidate(feature: any, original: SearchParams): SearchCandidate | undefined {
+    const coords: [number, number] | undefined = feature?.geometry?.coordinates;
+    if (!coords || coords.length !== 2) return undefined;
+    const [lon, lat] = coords;
+
+    if (typeof lat !== "number" || typeof lon !== "number") return undefined;
+
+    const properties = feature?.properties ?? {};
+    const company = properties.CompanyMetaData ?? {};
+    const hours = normalizeHours(company.Hours);
+
+    const distance = getDistance(
+        { latitude: original.lat, longitude: original.lon },
+        { latitude: lat, longitude: lon }
+    );
+
+    return {
+        id: company.id || feature.id,
+        name: company.name || properties.name || original.queryName,
+        address: company.address || properties.description || original.address,
+        lat,
+        lon,
+        distance,
+        url: company.url,
+        hoursText: hours.text,
+        hoursAvail: hours.availabilities,
+        raw: feature,
+    };
+}
+
+function normalizeHours(hours: any): { text?: string; availabilities?: CandidateHoursInterval[] } {
+    if (!hours) return {};
+
+    const availabilities: CandidateHoursInterval[] = [];
+
+    for (const availability of hours.Availabilities ?? []) {
+        const intervals = availability?.Intervals ?? [];
+        for (const interval of intervals) {
+            if (!interval?.from || !interval?.to) continue;
+            availabilities.push({
+                from: interval.from,
+                to: interval.to,
+                days: availability?.Days,
+                everyday: Boolean(availability?.Everyday),
+            });
         }
     }
 
-    console.log(`  ❌ Ни один кандидат не попал в радиус ${env.MAX_DISTANCE_METERS}м`);
-    return null;
+    const text: string | undefined =
+        hours.text ||
+        (hours.isTwentyFourHours || hours.IsTwentyFourHours ? "круглосуточно" : undefined) ||
+        (availabilities.some((a) => a.everyday && a.from === "00:00" && a.to === "24:00") ? "круглосуточно" : undefined);
+
+    return { text, availabilities: availabilities.length ? availabilities : undefined };
 }
+
+/**
+ * Инициализация браузера с сохранённым профилем
+ */
+export async function initBrowser() {
+    if (browser) return browser;
+
+    console.log("🌐 Запуск браузера...");
+
+    browser = await chromium.launch({
+        headless: env.BROWSER_HEADLESS !== "false",
+        channel: "chrome", // использовать установленный Chrome
+    });
+
+    // Проверяем, есть ли сохранённая сессия
+    const hasAuth = await fs.access(AUTH_STATE_PATH).then(() => true).catch(() => false);
+
+    if (hasAuth) {
+        console.log("✅ Загружаем сохранённую сессию");
+        const authState = JSON.parse(await fs.readFile(AUTH_STATE_PATH, "utf8"));
+        context = await browser.newContext({
+            storageState: authState,
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport: { width: 1920, height: 1080 },
+            locale: "ru-RU",
+            timezoneId: "Europe/Moscow",
+        });
+    } else {
+        console.log("⚠️  Сохранённой сессии нет, требуется авторизация");
+        context = await browser.newContext({
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport: { width: 1920, height: 1080 },
+            locale: "ru-RU",
+            timezoneId: "Europe/Moscow",
+        });
+    }
+
+    return browser;
+}
+
+/**
+ * Получить контекст браузера (с сохранённой сессией)
+ */
+export async function getContext(): Promise<BrowserContext> {
+    if (!context) {
+        await initBrowser();
+    }
+    return context!;
+}
+
+/**
+ * Создать новую страницу
+ */
+export async function newPage(): Promise<Page> {
+    const ctx = await getContext();
+    return ctx.newPage();
+}
+
+/**
+ * Авторизация в Яндексе (интерактивная)
+ */
+export async function loginToYandex() {
+    console.log("🔑 Начинаем авторизацию в Яндексе...");
+
+    const page = await newPage();
+
+    try {
+        // Переходим на страницу авторизации
+        await page.goto("https://passport.yandex.ru/auth", {
+            waitUntil: "networkidle",
+            timeout: 30000
+        });
+
+        console.log("\n" + "=".repeat(80));
+        console.log("⚠️  ТРЕБУЕТСЯ РУЧНАЯ АВТОРИЗАЦИЯ");
+        console.log("=".repeat(80));
+        console.log("\n1. Откройте браузер, который только что открылся");
+        console.log("2. Введите логин и пароль от Яндекса");
+        console.log("3. Пройдите 2FA если требуется");
+        console.log("4. Дождитесь полной загрузки главной страницы Яндекса");
+        console.log("5. Скрипт автоматически продолжит работу\n");
+
+        // Ждём, пока пользователь авторизуется
+        // Признак успешной авторизации - появление элемента профиля
+        await page.waitForSelector('[class*="User"], .PSHeader-User, .desk-notif-card__login-button', {
+            timeout: 300000 // 5 минут на авторизацию
+        });
+
+        // Даём время на полную загрузку
+        await page.waitForTimeout(3000);
+
+        console.log("\n✅ Авторизация успешна!");
+
+        // Сохраняем состояние авторизации
+        await fs.mkdir("./data", { recursive: true });
+        const authState = await context!.storageState();
+        await fs.writeFile(AUTH_STATE_PATH, JSON.stringify(authState, null, 2));
+
+        console.log("💾 Сессия сохранена в", AUTH_STATE_PATH);
+
+        await page.close();
+        return true;
+
+    } catch (error: any) {
+        console.error("❌ Ошибка авторизации:", error.message);
+        await page.close();
+        return false;
+    }
+}
+
+/**
+ * Проверка валидности сохранённой сессии
+ */
+export async function checkSession(): Promise<boolean> {
+    try {
+        const page = await newPage();
+
+        await page.goto("https://yandex.ru/maps", {
+            waitUntil: "networkidle",
+            timeout: 15000
+        });
+
+        // Проверяем, авторизованы ли мы
+        const isLoggedIn = await page.evaluate(() => {
+            return !!(
+                document.querySelector('[class*="User"]') ||
+                document.querySelector('.PSHeader-User') ||
+                document.querySelector('[data-bem*="user"]')
+            );
+        });
+
+        await page.close();
+
+        if (!isLoggedIn) {
+            console.log("⚠️  Сессия истекла, требуется повторная авторизация");
+        }
+
+        return isLoggedIn;
+
+    } catch (error) {
+        console.log("⚠️  Не удалось проверить сессию:", error);
+        return false;
+    }
+}
+
+/**
+ * Закрыть браузер
+ */
+export async function closeBrowser() {
+    if (context) {
+        await context.close();
+        context = null;
+    }
+    if (browser) {
+        await browser.close();
+        browser = null;
+    }
+}
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+    console.log("\n🛑 Получен сигнал завершения...");
+    await closeBrowser();
+    process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+    console.log("\n🛑 Получен сигнал завершения...");
+    await closeBrowser();
+    process.exit(0);
+});
