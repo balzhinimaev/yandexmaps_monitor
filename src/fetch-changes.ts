@@ -7,9 +7,43 @@ import pLimit from "p-limit";
 
 const BRANCHES_FILE = "./data/branches.json";
 const CHANGES_OUTPUT_FILE = "./data/branches-changes.json";
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 // Ограничиваем количество одновременных запросов
 const limit = pLimit(3);
+
+function parseTimestamp(timestamp: string): Date | null {
+    const match = timestamp.match(/(\d{2})-(\d{2})-(\d{4})\s*·\s*(\d{2}):(\d{2})/);
+    if (!match) {
+        return null;
+    }
+
+    const [, day, month, year, hour, minute] = match;
+    const parsedDate = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute)
+    );
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+}
+
+function keepRecentChanges(history: BranchChangeHistory): BranchChangeHistory {
+    const cutoff = Date.now() - ONE_DAY_MS;
+
+    const recentChanges = history.changes.filter((change) => {
+        const changeDate = parseTimestamp(change.timestamp);
+        return changeDate ? changeDate.getTime() >= cutoff : false;
+    });
+
+    return {
+        ...history,
+        totalChanges: recentChanges.length,
+        changes: recentChanges,
+    };
+}
 
 export async function fetchAllChanges() {
     try {
@@ -47,11 +81,15 @@ export async function fetchAllChanges() {
                 if (!branch.changesUrl || !branch.id) return null;
 
                 const history = await fetchBranchChangeHistory(branch.changesUrl, branch.id);
+                const filteredHistory = keepRecentChanges(history);
+                const originalTotal = history.totalChanges;
                 processed++;
 
-                console.log(`[${processed}/${branchesWithChanges.length}] ${branch.name || branch.id}: ${history.totalChanges} изменений`);
+                console.log(
+                    `[${processed}/${branchesWithChanges.length}] ${branch.name || branch.id}: ${filteredHistory.totalChanges} изменений${originalTotal !== filteredHistory.totalChanges ? ` (из ${originalTotal})` : ""}`
+                );
 
-                return history;
+                return filteredHistory;
             })
         );
 

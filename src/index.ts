@@ -25,7 +25,17 @@ async function doRun() {
 }
 
 // Запуск только если файл вызван напрямую
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectRun = (() => {
+    const argvPath = process.argv[1];
+    if (!argvPath) return false;
+    const normalizedArgvPath = argvPath.replace(/\\/g, "/");
+    return (
+        import.meta.url === `file://${normalizedArgvPath}` ||
+        import.meta.url.endsWith(normalizedArgvPath)
+    );
+})();
+
+if (isDirectRun || process.argv.includes("--once")) {
     doRun()
         .then(() => {
             if (process.argv.includes("--once")) {
