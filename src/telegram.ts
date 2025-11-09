@@ -1,9 +1,15 @@
 import { Telegraf } from "telegraf";
 import { env, CHAT_ID } from "./config.js";
 
-export const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
+export const bot = env.TELEGRAM_BOT_TOKEN
+    ? new Telegraf(env.TELEGRAM_BOT_TOKEN)
+    : null;
 
 export async function sendMessage(text: string) {
+    if (!bot) {
+        console.warn("⚠️  Telegram bot не настроен, сообщение не отправлено");
+        return;
+    }
     return bot.telegram.sendMessage(CHAT_ID as any, text, {
         link_preview_options: { is_disabled: true },
     });

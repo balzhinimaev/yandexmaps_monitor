@@ -1,30 +1,42 @@
-import cron from "node-cron";
-import { env } from "./config.js";
-import { bot } from "./telegram.js";
 import { runOnce } from "./run.js";
-import { reportAllOk, reportDiffs } from "./report.js";
+
+// Экспорты для использования в других модулях
+export { runOnce } from "./run.js";
+export { fetchAllChanges } from "./fetch-changes.js";
+export { checkAllRecentChanges } from "./check-recent-changes.js";
+export {
+    fetchBranches,
+    fetchBranchChangeHistory,
+    checkRecentChanges,
+    ensureYandexAuth,
+    closeBrowser,
+    type YandexBranch,
+    type BranchChange,
+    type BranchChangeHistory
+} from "./yandex.js";
 
 async function doRun() {
     try {
-        const { total, diffs } = await runOnce();
-        if (diffs.length === 0) await reportAllOk(total);
-        else await reportDiffs(diffs);
+        await runOnce();
     } catch (e: any) {
-        await bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID!, `❗ Ошибка проверки: ${e?.message || e}`);
+        console.error(`❗ Ошибка: ${e?.message || e}`);
+        process.exitCode = 1;
     }
 }
 
-// Поддержка одноразового запуска
-if (process.argv.includes("--once")) {
-    doRun().then(() => process.exit(0));
-} else {
-    // Планировщик
-    cron.schedule(
-        env.CRON_SCHEDULE,
-        () => {
-            doRun();
-        },
-        { timezone: env.TZ }
-    );
-    console.log(`Job scheduled: ${env.CRON_SCHEDULE} (${env.TZ})`);
+// Запуск только если файл вызван напрямую
+if (import.meta.url === `file://${process.argv[1]}`) {
+    doRun()
+        .then(() => {
+            if (process.argv.includes("--once")) {
+                process.exit();
+            }
+        })
+        .catch(() => {
+            if (process.argv.includes("--once")) {
+                process.exit(1);
+            }
+        });
 }
+
+

@@ -32,6 +32,9 @@ function extractText(value: unknown): string {
 }
 
 export async function loadCompanies(): Promise<Company[]> {
+    if (!env.XML_URL) {
+        throw new Error("XML_URL не задан в конфигурации");
+    }
     const { data } = await axios.get(env.XML_URL, {
         timeout: env.HTTP_TIMEOUT_MS,
     });
