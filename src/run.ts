@@ -10,7 +10,7 @@ export async function runOnce() {
 
         console.log("\n✅ Сессия Яндекс проверена. Загружаем филиалы...");
 
-        const branches = await fetchBranches();
+        const branches = await fetchBranches({ withChanges: true });
         console.log(`📦 Получено филиалов: ${branches.length}`);
 
         branches.slice(0, 5).forEach((branch, idx) => {

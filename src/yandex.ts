@@ -11,6 +11,14 @@ const AUTH_STATE_PATH = "./data/auth-state.json";
 const AUTH_LOGIN_URL = "https://passport.yandex.ru/auth";
 const BRANCHES_URL = env.CHAIN_BRANCHES_URL;
 
+/**
+ * Упрощённая запись об изменении: название типа + дата
+ */
+export type SimpleChange = {
+    title: string; // например "Изменение координат", "Удаление вида деятельности"
+    date: string; // например "11-11-2025 · 07:52"
+};
+
 export type YandexBranch = {
     id?: string;
     name?: string;
@@ -21,6 +29,7 @@ export type YandexBranch = {
     hasRecentChanges?: boolean; // есть ли изменения за последние 24 часа
     recentChangesCount?: number; // количество изменений за последние 24 часа
     lastChangeTime?: string; // время последнего изменения
+    changesHistory?: SimpleChange[]; // история изменений (название + дата)
     raw?: Record<string, unknown>;
 };
 
@@ -58,7 +67,10 @@ export async function initBrowser() {
         channel: "chrome",
     });
 
-    const hasAuth = await fs.access(AUTH_STATE_PATH).then(() => true).catch(() => false);
+    const hasAuth = await fs
+        .access(AUTH_STATE_PATH)
+        .then(() => true)
+        .catch(() => false);
 
     const baseContext = {
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -112,7 +124,7 @@ export async function loginToYandex() {
         // Переходим на страницу авторизации
         await page.goto(AUTH_LOGIN_URL, {
             waitUntil: "domcontentloaded",
-            timeout: 30000
+            timeout: 30000,
         });
 
         console.log("\n" + "=".repeat(80));
@@ -133,31 +145,63 @@ export async function loginToYandex() {
         const startTime = Date.now();
         const timeoutMs = 300000; // 5 минут
 
-        while (!authCompleted && (Date.now() - startTime) < timeoutMs) {
+        while (!authCompleted && Date.now() - startTime < timeoutMs) {
             await page.waitForTimeout(2000);
 
             const currentUrl = page.url();
 
-            // Проверяем, что мы ушли со страницы авторизации
-            if (!currentUrl.includes('passport.yandex.ru/auth')) {
-                console.log("✓ Обнаружен переход со страницы авторизации");
+            // Проверяем наличие сессионных cookies
+            const cookies = await page.context().cookies();
+            const sessionCookies = cookies.filter((c) => c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login");
+            const hasSessionCookies = sessionCookies.length > 0;
+
+            // Логируем текущее состояние для отладки
+            const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+            if (elapsedSec % 10 === 0 && elapsedSec > 0) {
+                console.log(`   ⏳ Ожидание: ${elapsedSec}с, URL: ${currentUrl.substring(0, 60)}...`);
+            }
+
+            // Успешная авторизация определяется по:
+            // 1. Наличие сессионных cookies (главный критерий)
+            // 2. И уход с домена passport.yandex.ru (пользователь залогинился и был редиректнут)
+            if (hasSessionCookies) {
+                console.log(`✓ Обнаружены сессионные cookies: ${sessionCookies.map((c) => c.name).join(", ")}`);
+
+                // Если есть cookies, но мы ещё на passport - ждём редиректа
+                if (currentUrl.includes("passport.yandex.ru")) {
+                    console.log("   ⏳ Ожидаем редирект с passport.yandex.ru...");
+                    await page.waitForTimeout(3000);
+                    const newUrl = page.url();
+                    if (!newUrl.includes("passport.yandex.ru")) {
+                        console.log("✓ Редирект завершён");
+                    }
+                }
                 authCompleted = true;
                 break;
             }
 
-            // Альтернативная проверка - наличие Session_id cookie
-            const cookies = await page.context().cookies();
-            const hasSessionId = cookies.some(c => c.name === 'Session_id');
+            // Если ушли с passport.yandex.ru без cookies - возможно, авторизация отменена
+            if (!currentUrl.includes("passport.yandex.ru")) {
+                // Даём время на установку cookies после редиректа
+                await page.waitForTimeout(3000);
+                const cookiesAfterRedirect = await page.context().cookies();
+                const sessionAfterRedirect = cookiesAfterRedirect.filter((c) => c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login");
 
-            if (hasSessionId) {
-                console.log("✓ Обнаружена Session_id cookie");
-                authCompleted = true;
-                break;
+                if (sessionAfterRedirect.length > 0) {
+                    console.log(`✓ Обнаружены сессионные cookies после редиректа: ${sessionAfterRedirect.map((c) => c.name).join(", ")}`);
+                    authCompleted = true;
+                    break;
+                } else {
+                    console.log("⚠️  Произошёл редирект с passport.yandex.ru, но сессионные cookies не найдены");
+                    console.log("   Текущий URL:", currentUrl);
+                    console.log("   Возможно, авторизация была отменена или произошла ошибка");
+                    // Продолжаем ожидание - возможно, пользователь вернётся на страницу авторизации
+                }
             }
         }
 
         if (!authCompleted) {
-            throw new Error("Превышено время ожидания авторизации (5 минут)");
+            throw new Error("Превышено время ожидания авторизации (5 минут). Убедитесь, что вы успешно вошли в аккаунт Яндекс.");
         }
 
         // Даём время на полную загрузку и установку всех cookies
@@ -166,9 +210,7 @@ export async function loginToYandex() {
 
         // Дополнительная проверка cookies
         const finalCookies = await page.context().cookies();
-        const sessionCookiesCheck = finalCookies.filter((c: any) =>
-            c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login"
-        );
+        const sessionCookiesCheck = finalCookies.filter((c: any) => c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login");
 
         if (sessionCookiesCheck.length === 0) {
             console.warn("⚠️  Предупреждение: не найдены ожидаемые сессионные cookies");
@@ -183,9 +225,7 @@ export async function loginToYandex() {
 
         // Проверяем, что есть важные cookies
         const cookies = authState.cookies;
-        const sessionCookies = cookies.filter((c: any) =>
-            c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login"
-        );
+        const sessionCookies = cookies.filter((c: any) => c.name === "Session_id" || c.name === "sessguard" || c.name === "yandex_login");
 
         console.log(`🍪 Сохранено ${cookies.length} cookies, из них ${sessionCookies.length} сессионных`);
 
@@ -196,7 +236,6 @@ export async function loginToYandex() {
 
         await page.close();
         return true;
-
     } catch (error: any) {
         console.error("❌ Ошибка авторизации:", error.message);
         await page.close();
@@ -210,6 +249,11 @@ type EnsureAuthOptions = {
 
 export async function ensureYandexAuth(options: EnsureAuthOptions = {}): Promise<boolean> {
     const { forceRecheck = false } = options;
+
+    // Для отладки можно принудительно сбросить валидацию через переменную окружения
+    if (process.env.FORCE_REAUTH === "true") {
+        authValidated = false;
+    }
 
     if (authValidated && !forceRecheck) {
         return true;
@@ -258,7 +302,7 @@ export async function checkSession(): Promise<boolean> {
 
             await page.goto(AUTH_CHECK_URL, {
                 waitUntil: "domcontentloaded",
-                timeout: 15000
+                timeout: 15000,
             });
 
             // Даем время на загрузку и применение cookies
@@ -268,12 +312,7 @@ export async function checkSession(): Promise<boolean> {
             const cookies = await page.context().cookies();
             const cookieNames = new Set(cookies.map((cookie) => cookie.name));
 
-            const sessionCookieNames = [
-                "Session_id",
-                "sessguard",
-                "yandex_login",
-                "sprav_session",
-            ];
+            const sessionCookieNames = ["Session_id", "sessguard", "yandex_login", "sprav_session"];
 
             const foundSessionCookies = sessionCookieNames.filter((name) => cookieNames.has(name));
             const hasSessionCookie = foundSessionCookies.length > 0;
@@ -284,14 +323,10 @@ export async function checkSession(): Promise<boolean> {
             const status = await page.evaluate(() => {
                 const doc = document;
                 const bodyText = doc.body?.innerText ?? "";
-                const hasCaptcha =
-                    !!doc.querySelector("smart-captcha") ||
-                    bodyText.includes("SmartCaptcha") ||
-                    bodyText.includes("Я не робот");
+                const hasCaptcha = !!doc.querySelector("smart-captcha") || bodyText.includes("SmartCaptcha") || bodyText.includes("Я не робот");
                 const loginLinks = Array.from(doc.querySelectorAll('a[href*="passport.yandex.ru"]'));
                 const needsLogin = loginLinks.some((el) => /войти|логин/i.test(el.textContent || ""));
-                const hasUserMenu =
-                    !!doc.querySelector('[data-tid*="user"], [data-testid*="user"], [class*="User"], [class*="user"]');
+                const hasUserMenu = !!doc.querySelector('[data-tid*="user"], [data-testid*="user"], [class*="User"], [class*="user"]');
 
                 return {
                     hasCaptcha,
@@ -307,8 +342,8 @@ export async function checkSession(): Promise<boolean> {
                 return false;
             }
 
-            // Считаем авторизацию валидной если есть сессионные cookies ИЛИ меню пользователя
-            const loggedIn = hasSessionCookie || status.hasUserMenu;
+            // Считаем авторизацию валидной если есть сессионные cookies И отсутствуют ссылки на вход
+            const loggedIn = hasSessionCookie && !status.needsLogin;
 
             if (!loggedIn && status.needsLogin) {
                 console.log("⚠️  Сессия Яндекс неактивна, требуется авторизация");
@@ -362,7 +397,10 @@ process.on("SIGTERM", async () => {
 /**
  * Проверить есть ли изменения за последние 24 часа
  */
-export async function checkRecentChanges(changesUrl: string, branchId: string): Promise<{
+export async function checkRecentChanges(
+    changesUrl: string,
+    branchId: string
+): Promise<{
     hasRecentChanges: boolean;
     recentChangesCount: number;
     lastChangeTime?: string;
@@ -386,23 +424,17 @@ export async function checkRecentChanges(changesUrl: string, branchId: string): 
                 if (!match) return null;
 
                 const [, day, month, year, hour, minute] = match;
-                return new Date(
-                    parseInt(year),
-                    parseInt(month) - 1,
-                    parseInt(day),
-                    parseInt(hour),
-                    parseInt(minute)
-                );
+                return new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
             };
 
-            const requestBlocks = Array.from(document.querySelectorAll('.RequestChanges.CompanyChangesPage-Request'));
+            const requestBlocks = Array.from(document.querySelectorAll(".RequestChanges.CompanyChangesPage-Request"));
 
             let recentCount = 0;
             let lastChangeTime;
 
             for (const requestBlock of requestBlocks) {
-                const timeEl = requestBlock.querySelector('.RequestChanges-RequestTime');
-                const timestamp = timeEl?.textContent?.trim() || '';
+                const timeEl = requestBlock.querySelector(".RequestChanges-RequestTime");
+                const timestamp = timeEl?.textContent?.trim() || "";
 
                 const changeDate = parseTimestamp(timestamp);
                 if (!changeDate) continue;
@@ -419,7 +451,7 @@ export async function checkRecentChanges(changesUrl: string, branchId: string): 
             return {
                 hasRecentChanges: recentCount > 0,
                 recentChangesCount: recentCount,
-                lastChangeTime
+                lastChangeTime,
             };
         });
 
@@ -428,8 +460,86 @@ export async function checkRecentChanges(changesUrl: string, branchId: string): 
         console.error(`❌ Ошибка при проверке изменений: ${error.message}`);
         return {
             hasRecentChanges: false,
-            recentChangesCount: 0
+            recentChangesCount: 0,
         };
+    } finally {
+        await page.close();
+    }
+}
+
+/**
+ * Получить упрощённую историю изменений (только название + дата)
+ */
+export async function fetchSimpleBranchChanges(changesUrl: string): Promise<SimpleChange[]> {
+    const page = await newPage();
+
+    try {
+        console.log(`🔍 Загружаем историю изменений: ${changesUrl}`);
+        await page.goto(changesUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+        await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+
+        const extraction = await page.evaluate(() => {
+            const result: {
+                changes: Array<{ title: string; date: string }>;
+                captcha: boolean;
+                needsLogin: boolean;
+            } = {
+                changes: [],
+                captcha: false,
+                needsLogin: false,
+            };
+
+            const doc = document;
+            const bodyText = doc.body?.innerText ?? "";
+
+            // Проверяем капчу и авторизацию
+            result.captcha = !!doc.querySelector("smart-captcha") || bodyText.includes("SmartCaptcha") || bodyText.includes("Я не робот");
+
+            const loginLinks = Array.from(doc.querySelectorAll('a[href*="passport.yandex.ru"]'));
+            result.needsLogin = loginLinks.some((el) => /войти|логин/i.test(el.textContent || ""));
+
+            if (result.captcha || result.needsLogin) {
+                return result;
+            }
+
+            // Находим все блоки изменений (RequestChanges)
+            const requestBlocks = Array.from(doc.querySelectorAll(".RequestChanges.CompanyChangesPage-Request"));
+
+            for (const requestBlock of requestBlocks) {
+                // Время изменения
+                const timeEl = requestBlock.querySelector(".RequestChanges-RequestTime");
+                const date = timeEl?.textContent?.trim() || "";
+
+                // Все изменения внутри этого блока
+                const changeElements = Array.from(requestBlock.querySelectorAll(".CompanyChanges-Change"));
+
+                for (const changeEl of changeElements) {
+                    const titleEl = changeEl.querySelector(".CompanyChanges-ChangeTitle");
+                    const title = titleEl?.textContent?.trim() || "";
+
+                    if (title && date) {
+                        result.changes.push({ title, date });
+                    }
+                }
+            }
+
+            return result;
+        });
+
+        if (extraction.captcha) {
+            throw new Error(`SmartCaptcha на странице изменений: ${changesUrl}`);
+        }
+
+        if (extraction.needsLogin) {
+            throw new Error(`Требуется авторизация для просмотра изменений: ${changesUrl}`);
+        }
+
+        console.log(`   ✓ Найдено изменений: ${extraction.changes.length}`);
+        return extraction.changes;
+    } catch (error: any) {
+        console.error(`❌ Ошибка при загрузке истории изменений: ${error.message}`);
+        return [];
     } finally {
         await page.close();
     }
@@ -471,10 +581,7 @@ export async function fetchBranchChangeHistory(changesUrl: string, branchId: str
             const bodyText = doc.body?.innerText ?? "";
 
             // Проверяем капчу и авторизацию
-            result.captcha =
-                !!doc.querySelector("smart-captcha") ||
-                bodyText.includes("SmartCaptcha") ||
-                bodyText.includes("Я не робот");
+            result.captcha = !!doc.querySelector("smart-captcha") || bodyText.includes("SmartCaptcha") || bodyText.includes("Я не робот");
 
             const loginLinks = Array.from(doc.querySelectorAll('a[href*="passport.yandex.ru"]'));
             result.needsLogin = loginLinks.some((el) => /войти|логин/i.test(el.textContent || ""));
@@ -484,32 +591,32 @@ export async function fetchBranchChangeHistory(changesUrl: string, branchId: str
             }
 
             // Находим все блоки изменений
-            const requestBlocks = Array.from(doc.querySelectorAll('.RequestChanges.CompanyChangesPage-Request'));
+            const requestBlocks = Array.from(doc.querySelectorAll(".RequestChanges.CompanyChangesPage-Request"));
 
             for (const requestBlock of requestBlocks) {
                 // Время и автор
-                const timeEl = requestBlock.querySelector('.RequestChanges-RequestTime');
-                const authorEl = requestBlock.querySelector('.RequestChanges-RequestLogin');
-                const timestamp = timeEl?.textContent?.trim() || '';
+                const timeEl = requestBlock.querySelector(".RequestChanges-RequestTime");
+                const authorEl = requestBlock.querySelector(".RequestChanges-RequestLogin");
+                const timestamp = timeEl?.textContent?.trim() || "";
                 const author = authorEl?.textContent?.trim();
 
                 // Все изменения внутри этого блока
-                const changeElements = Array.from(requestBlock.querySelectorAll('.CompanyChanges-Change'));
+                const changeElements = Array.from(requestBlock.querySelectorAll(".CompanyChanges-Change"));
 
                 for (const changeEl of changeElements) {
-                    const titleEl = changeEl.querySelector('.CompanyChanges-ChangeTitle');
-                    const title = titleEl?.textContent?.trim() || '';
+                    const titleEl = changeEl.querySelector(".CompanyChanges-ChangeTitle");
+                    const title = titleEl?.textContent?.trim() || "";
 
                     // Ищем diff элементы (старое/новое значение)
-                    const diffContainer = changeEl.querySelector('.CompanyChanges-ChangeDiff');
+                    const diffContainer = changeEl.querySelector(".CompanyChanges-ChangeDiff");
 
                     let oldValue: string | undefined;
                     let newValue: string | undefined;
 
                     if (diffContainer) {
                         // Ищем элементы с действиями add/remove
-                        const addEl = diffContainer.querySelector('.CompanyChanges-ChangeDiffItem_action_add');
-                        const removeEl = diffContainer.querySelector('.CompanyChanges-ChangeDiffItem_action_remove');
+                        const addEl = diffContainer.querySelector(".CompanyChanges-ChangeDiffItem_action_add");
+                        const removeEl = diffContainer.querySelector(".CompanyChanges-ChangeDiffItem_action_remove");
 
                         if (addEl) {
                             newValue = addEl.textContent?.trim();
@@ -519,16 +626,16 @@ export async function fetchBranchChangeHistory(changesUrl: string, branchId: str
                         }
 
                         // Если это карта (например, изменение координат)
-                        const mapDiffs = diffContainer.querySelector('.CompanyChanges-MapsDiffs');
+                        const mapDiffs = diffContainer.querySelector(".CompanyChanges-MapsDiffs");
                         if (mapDiffs && !newValue && !oldValue) {
-                            const addBadge = mapDiffs.querySelector('.CompanyChanges-MapImageBadge_action_add');
-                            const removeBadge = mapDiffs.querySelector('.CompanyChanges-MapImageBadge_action_remove');
+                            const addBadge = mapDiffs.querySelector(".CompanyChanges-MapImageBadge_action_add");
+                            const removeBadge = mapDiffs.querySelector(".CompanyChanges-MapImageBadge_action_remove");
 
                             if (addBadge) {
-                                newValue = '[Изменение на карте]';
+                                newValue = "[Изменение на карте]";
                             }
                             if (removeBadge) {
-                                oldValue = '[Прежнее положение на карте]';
+                                oldValue = "[Прежнее положение на карте]";
                             }
                         }
                     }
@@ -575,12 +682,23 @@ export async function fetchBranchChangeHistory(changesUrl: string, branchId: str
     }
 }
 
-export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexBranch[]> {
+type FetchBranchesOptions = {
+    url?: string;
+    withChanges?: boolean; // если true, то для каждого филиала загрузим историю изменений
+};
+
+export async function fetchBranches(options: FetchBranchesOptions | string = {}): Promise<YandexBranch[]> {
+    // Поддержка старого API (только URL)
+    const opts: FetchBranchesOptions = typeof options === "string" ? { url: options } : options;
+    const url = opts.url || BRANCHES_URL;
+    const withChanges = opts.withChanges || false;
     const page = await newPage();
 
     // Добавляем полифилл для __name ДО загрузки страницы
     await page.addInitScript(() => {
-        (window as any).__name = function(fn: any, name: string) { return fn; };
+        (window as any).__name = function (fn: any, name: string) {
+            return fn;
+        };
     });
 
     const allBranches: YandexBranch[] = [];
@@ -588,6 +706,7 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
     let hasMorePages = true;
     const defaultOrigin = "https://yandex.ru";
     let pageOrigin = defaultOrigin;
+    let pageClosed = false;
 
     try {
         console.log(`🌐 Загружаем страницу филиалов: ${url}`);
@@ -606,21 +725,26 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
         while (hasMorePages) {
             // Ждем появления данных
             console.log(`📄 Загружаем страницу ${currentPage}...`);
-            await page.waitForFunction(function() {
-                return !!(
-                    (window as any).__PRELOAD_DATA ||
-                    (window as any).__INITIAL_DATA ||
-                    (window as any).__DATA ||
-                    (window as any).__SERP_TASK_STATE ||
-                    document.querySelector('.BranchesList-CompanyRow')
-                );
-            }, { timeout: 15000 }).catch((err) => {
-                console.log("⚠️  Данные не появились за 15 секунд:", err.message);
-            });
+            await page
+                .waitForFunction(
+                    function () {
+                        return !!(
+                            (window as any).__PRELOAD_DATA ||
+                            (window as any).__INITIAL_DATA ||
+                            (window as any).__DATA ||
+                            (window as any).__SERP_TASK_STATE ||
+                            document.querySelector(".BranchesList-CompanyRow")
+                        );
+                    },
+                    { timeout: 15000 }
+                )
+                .catch((err) => {
+                    console.log("⚠️  Данные не появились за 15 секунд:", err.message);
+                });
 
             // Извлекаем филиалы с текущей страницы
-            const extraction = await page.evaluate(function() {
-                var result: {
+            const extraction = await page.evaluate(function () {
+                const result: {
                     branches: any[];
                     captcha: boolean;
                     needsLogin: boolean;
@@ -630,15 +754,12 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
                     needsLogin: false,
                 };
 
-                var doc = document;
-                var bodyText = doc.body && doc.body.innerText ? doc.body.innerText : "";
-                result.captcha =
-                    !!doc.querySelector("smart-captcha") ||
-                    bodyText.includes("SmartCaptcha") ||
-                    bodyText.includes("Я не робот");
+                const doc = document;
+                const bodyText = doc.body && doc.body.innerText ? doc.body.innerText : "";
+                result.captcha = !!doc.querySelector("smart-captcha") || bodyText.includes("SmartCaptcha") || bodyText.includes("Я не робот");
 
-                var loginLinks = Array.from(doc.querySelectorAll('a[href*="passport.yandex.ru"]'));
-                result.needsLogin = loginLinks.some(function(el) {
+                const loginLinks = Array.from(doc.querySelectorAll('a[href*="passport.yandex.ru"]'));
+                result.needsLogin = loginLinks.some(function (el) {
                     return /войти|логин/i.test(el.textContent || "");
                 });
 
@@ -646,21 +767,27 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
                     return result;
                 }
 
-                var globalData =
-                    (window as any).__PRELOAD_DATA ||
-                    (window as any).__INITIAL_DATA ||
-                    (window as any).__DATA ||
-                    (window as any).__SERP_TASK_STATE;
+                const globalData =
+                    (window as any).__PRELOAD_DATA || (window as any).__INITIAL_DATA || (window as any).__DATA || (window as any).__SERP_TASK_STATE;
 
                 function extractFromData() {
-                    var items =
+                    const items =
                         (globalData && globalData.chainBranches && globalData.chainBranches.items) ||
-                        (globalData && globalData.state && globalData.state.page && globalData.state.page.data && globalData.state.page.data.chainBranches && globalData.state.page.data.chainBranches.items) ||
-                        (globalData && globalData.state && globalData.state.pageData && globalData.state.pageData.chainBranches && globalData.state.pageData.chainBranches.items) ||
+                        (globalData &&
+                            globalData.state &&
+                            globalData.state.page &&
+                            globalData.state.page.data &&
+                            globalData.state.page.data.chainBranches &&
+                            globalData.state.page.data.chainBranches.items) ||
+                        (globalData &&
+                            globalData.state &&
+                            globalData.state.pageData &&
+                            globalData.state.pageData.chainBranches &&
+                            globalData.state.pageData.chainBranches.items) ||
                         (globalData && globalData.data && globalData.data.chainBranches && globalData.data.chainBranches.items);
 
                     if (Array.isArray(items)) {
-                        result.branches = items.map(function(item) {
+                        result.branches = items.map(function (item) {
                             return {
                                 id: (item && item.id) || (item && item.branchId) || (item && item.businessId) || undefined,
                                 name: (item && item.name) || (item && item.title) || undefined,
@@ -676,7 +803,7 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
                 extractFromData();
 
                 if (result.branches.length === 0) {
-                    var selectorCandidates = [
+                    const selectorCandidates = [
                         ".BranchesList-CompanyRow",
                         '[data-testid="branch-card"]',
                         '[data-tid="branch-card"]',
@@ -685,38 +812,38 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
                         ".ListItemView-ListItem",
                     ];
 
-                    var elements: Element[] = [];
-                    for (var i = 0; i < selectorCandidates.length; i++) {
-                        var selector = selectorCandidates[i];
+                    let elements: Element[] = [];
+                    for (let i = 0; i < selectorCandidates.length; i++) {
+                        const selector = selectorCandidates[i];
                         elements = Array.from(doc.querySelectorAll(selector));
                         if (elements.length) break;
                     }
 
                     if (elements.length) {
-                        result.branches = elements.map(function(el) {
-                            var nameEl =
-                                el.querySelector('.CompanyInfoCard-CompanyName') ||
+                        result.branches = elements.map(function (el) {
+                            const nameEl =
+                                el.querySelector(".CompanyInfoCard-CompanyName") ||
                                 el.querySelector('[data-tid="branch-name"]') ||
                                 el.querySelector('[data-testid="branch-name"]') ||
                                 el.querySelector("h3, h2");
-                            var addressEl =
-                                el.querySelector('.CompanyInfoCard-CompanyAddress') ||
+                            const addressEl =
+                                el.querySelector(".CompanyInfoCard-CompanyAddress") ||
                                 el.querySelector('[data-tid="branch-address"]') ||
                                 el.querySelector('[data-testid="branch-address"]') ||
                                 el.querySelector('[class*="Address"]') ||
                                 el.querySelector("address");
-                            var statusEl =
-                                el.querySelector('.StatusLabel') ||
+                            const statusEl =
+                                el.querySelector(".StatusLabel") ||
                                 el.querySelector('[data-tid="branch-status"]') ||
                                 el.querySelector('[data-testid="branch-status"]') ||
                                 el.querySelector('[class*="Status"]');
-                            var linkEl = el.querySelector("a[href]");
+                            const linkEl = el.querySelector("a[href]");
 
-                            var id = undefined;
+                            let id = undefined;
                             if (linkEl) {
-                                var href = linkEl.getAttribute("href");
+                                const href = linkEl.getAttribute("href");
                                 if (href) {
-                                    var match = href.match(/\/sprav\/(\d+)/);
+                                    const match = href.match(/\/sprav\/(\d+)/);
                                     if (match) {
                                         id = match[1];
                                     }
@@ -769,23 +896,23 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
             console.log(`   ✓ Получено ${extraction.branches.length} филиалов (всего: ${allBranches.length})`);
 
             // Проверяем наличие кнопки "Вперед" и кликаем по ней
-            const paginationInfo = await page.evaluate(function() {
-                var allPaginationLinks = Array.from(document.querySelectorAll('.Pagination-Link'));
-                var paginationTotals = document.querySelector('.Pagination-Totals');
-                var selectedPage = document.querySelector('.Pagination-Link_selected');
+            const paginationInfo = await page.evaluate(function () {
+                const allPaginationLinks = Array.from(document.querySelectorAll(".Pagination-Link"));
+                const paginationTotals = document.querySelector(".Pagination-Totals");
+                const selectedPage = document.querySelector(".Pagination-Link_selected");
 
-                var linksInfo = allPaginationLinks.map(function(link) {
+                const linksInfo = allPaginationLinks.map(function (link) {
                     return {
-                        text: link.textContent ? link.textContent.trim() : '',
+                        text: link.textContent ? link.textContent.trim() : "",
                         classes: link.className,
-                        isTypeText: link.classList.contains('Pagination-Link_type_text')
+                        isTypeText: link.classList.contains("Pagination-Link_type_text"),
                     };
                 });
 
                 // Парсим totalsText, удаляя лишние пробелы между цифрами
-                var totalsText = null;
+                let totalsText = null;
                 if (paginationTotals && paginationTotals.textContent) {
-                    totalsText = paginationTotals.textContent.replace(/\s+/g, ' ').trim();
+                    totalsText = paginationTotals.textContent.replace(/\s+/g, " ").trim();
                 }
 
                 return {
@@ -798,8 +925,8 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
             console.log(`   🔍 Пагинация: страница ${paginationInfo.selectedPageText}, всего: ${paginationInfo.totalsText}`);
 
             // Ищем кнопку "Вперед"
-            const hasNextButton = paginationInfo.allLinks.some(link =>
-                link.text && (link.text.includes('Вперед') || link.text.includes('далее') || link.text.includes('→'))
+            const hasNextButton = paginationInfo.allLinks.some(
+                (link) => link.text && (link.text.includes("Вперед") || link.text.includes("далее") || link.text.includes("→"))
             );
 
             if (!hasNextButton) {
@@ -813,13 +940,13 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
             console.log(`   ⏳ Переход со страницы ${currentPageNumber} на следующую...`);
 
             // Кликаем по кнопке "Вперед"
-            const clicked = await page.evaluate(function() {
-                var links = Array.from(document.querySelectorAll('.Pagination-Link'));
-                var nextLink = links.find(function(link) {
-                    var text = link.textContent ? link.textContent.trim() : '';
-                    return text.includes('Вперед') || text.includes('далее') || text === '→';
+            const clicked = await page.evaluate(function () {
+                const links = Array.from(document.querySelectorAll(".Pagination-Link"));
+                const nextLink = links.find(function (link) {
+                    const text = link.textContent ? link.textContent.trim() : "";
+                    return text.includes("Вперед") || text.includes("далее") || text === "→";
                 });
-                if (nextLink && !nextLink.classList.contains('ya-business-link_disabled')) {
+                if (nextLink && !nextLink.classList.contains("ya-business-link_disabled")) {
                     (nextLink as HTMLElement).click();
                     return true;
                 }
@@ -835,15 +962,21 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
             currentPage++;
 
             // Ждем изменения номера выбранной страницы
-            const pageChanged = await page.waitForFunction(function(prevPageNumber) {
-                var selectedPage = document.querySelector('.Pagination-Link_selected');
-                if (!selectedPage || !selectedPage.textContent) return false;
-                var currentPageText = selectedPage.textContent.trim();
-                return currentPageText !== prevPageNumber && currentPageText !== '';
-            }, currentPageNumber, { timeout: 10000 }).catch(() => {
-                console.log("   ⚠️  Timeout при ожидании изменения номера страницы");
-                return null;
-            });
+            const pageChanged = await page
+                .waitForFunction(
+                    function (prevPageNumber) {
+                        const selectedPage = document.querySelector(".Pagination-Link_selected");
+                        if (!selectedPage || !selectedPage.textContent) return false;
+                        const currentPageText = selectedPage.textContent.trim();
+                        return currentPageText !== prevPageNumber && currentPageText !== "";
+                    },
+                    currentPageNumber,
+                    { timeout: 10000 }
+                )
+                .catch(() => {
+                    console.log("   ⚠️  Timeout при ожидании изменения номера страницы");
+                    return null;
+                });
 
             if (!pageChanged) {
                 console.log("⚠️  Страница не обновилась после клика, завершаем пагинацию");
@@ -863,8 +996,40 @@ export async function fetchBranches(url: string = BRANCHES_URL): Promise<YandexB
             await fs.writeFile("./data/branches-last.html", html);
         }
 
-        return allBranches;
-    } finally {
+        // Закрываем страницу списка до загрузки истории изменений
         await page.close();
+        pageClosed = true;
+
+        // Если нужно загрузить историю изменений для каждого филиала
+        if (withChanges && allBranches.length > 0) {
+            console.log(`\n📜 Загружаем историю изменений для ${allBranches.length} филиалов...`);
+
+            for (let i = 0; i < allBranches.length; i++) {
+                // for (let i = 5; i !== 0; i-=5) {
+                const branch = allBranches[i];
+                if (branch.changesUrl) {
+                    console.log(`   [${i + 1}/${allBranches.length}] ${branch.name || branch.id}`);
+                    try {
+                        const changes = await fetchSimpleBranchChanges(branch.changesUrl);
+                        branch.changesHistory = changes;
+                    } catch (error) {
+                        const errMsg = error instanceof Error ? error.message : String(error);
+                        console.error(`   ❌ Ошибка: ${errMsg}`);
+                        branch.changesHistory = [];
+                    }
+                    // Небольшая задержка между запросами
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+            }
+
+            console.log(`✅ История изменений загружена для всех филиалов`);
+        }
+
+        return allBranches;
+    } catch (error) {
+        if (!pageClosed) {
+            await page.close();
+        }
+        throw error;
     }
 }
