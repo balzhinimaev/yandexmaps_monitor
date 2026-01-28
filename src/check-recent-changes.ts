@@ -45,12 +45,20 @@ async function sendCheckReport(
 
         for (const branch of branchesWithChanges.slice(0, 15)) {
             const name = branch.name || branch.id || "?";
+            const address = branch.address || "";
             const count = branch.recentChangesCount || 0;
             const time = branch.lastChangeTime ? ` (${branch.lastChangeTime})` : "";
-            lines.push(`• ${name}: ${count} изм.${time}`);
+
+            lines.push(``);
+            lines.push(`• ${name}`);
+            if (address) {
+                lines.push(`  📍 ${address}`);
+            }
+            lines.push(`  ${count} изм.${time}`);
         }
 
         if (branchesWithChanges.length > 15) {
+            lines.push(``);
             lines.push(`... и ещё ${branchesWithChanges.length - 15} филиалов`);
         }
     }
