@@ -197,7 +197,8 @@ const isMainModule = process.argv[1] && (
 if (isMainModule) {
     // Парсинг аргументов
     const args = process.argv.slice(2);
-    const useTelegram = args.includes("--telegram") || args.includes("-t");
+    // По умолчанию отправляем в TG, если не указан --no-telegram
+    const useTelegram = !args.includes("--no-telegram");
 
     // Обработка сигналов завершения
     const handleShutdown = async (signal: string) => {
