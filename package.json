@@ -9,6 +9,7 @@
     "run:once": "tsx src/index.ts --once",
     "fetch:changes": "npm run build && node dist/fetch-changes.js",
     "check:recent": "npm run build && node dist/check-recent-changes.js",
+    "check:recent:telegram": "npm run build && node dist/check-recent-changes.js --telegram",
     "analyze": "npm run build && node dist/analyze-changes.js",
     "analyze:pdf": "npm run build && node dist/analyze-changes.js --pdf ./analysis-report.pdf",
     "analyze:telegram": "npm run build && node dist/analyze-changes.js --telegram",

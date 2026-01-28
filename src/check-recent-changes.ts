@@ -3,6 +3,7 @@
 
 import { promises as fs } from "fs";
 import { ensureYandexAuth, closeBrowser, checkRecentChanges, type YandexBranch } from "./yandex.js";
+import { sendMessage } from "./telegram.js";
 import pLimit from "p-limit";
 
 const BRANCHES_FILE = "./data/branches.json";
@@ -19,7 +20,46 @@ async function updateBranchInFile(branches: YandexBranch[], index: number, updat
 // Флаг для отслеживания прерывания
 let isShuttingDown = false;
 
-export async function checkAllRecentChanges() {
+/**
+ * Отправка отчёта о проверке в Telegram
+ */
+async function sendCheckReport(
+    total: number,
+    withChanges: number,
+    branchesWithChanges: YandexBranch[]
+): Promise<void> {
+    const lines: string[] = [];
+
+    if (withChanges === 0) {
+        lines.push(`✅ Проверка завершена`);
+        lines.push(``);
+        lines.push(`Проверено филиалов: ${total}`);
+        lines.push(`За последние 24ч изменений не обнаружено.`);
+    } else {
+        lines.push(`⚠️ Обнаружены изменения за 24ч`);
+        lines.push(``);
+        lines.push(`Проверено филиалов: ${total}`);
+        lines.push(`С изменениями: ${withChanges}`);
+        lines.push(``);
+        lines.push(`📋 Филиалы с изменениями:`);
+
+        for (const branch of branchesWithChanges.slice(0, 15)) {
+            const name = branch.name || branch.id || "?";
+            const count = branch.recentChangesCount || 0;
+            const time = branch.lastChangeTime ? ` (${branch.lastChangeTime})` : "";
+            lines.push(`• ${name}: ${count} изм.${time}`);
+        }
+
+        if (branchesWithChanges.length > 15) {
+            lines.push(`... и ещё ${branchesWithChanges.length - 15} филиалов`);
+        }
+    }
+
+    await sendMessage(lines.join("\n"));
+}
+
+export async function checkAllRecentChanges(options: { telegram?: boolean } = {}) {
+    const { telegram = false } = options;
     try {
         const authOk = await ensureYandexAuth();
         if (!authOk) {
@@ -111,18 +151,25 @@ export async function checkAllRecentChanges() {
         console.log(`\n💾 Все данные сохранены в ${BRANCHES_FILE}`);
 
         // Показываем филиалы с изменениями
+        const changedBranches = branches.filter(b => b.hasRecentChanges);
+
         if (withRecentChanges > 0) {
             console.log(`\n🔥 Филиалы с изменениями за последние 24 часа:`);
-            branches
-                .filter(b => b.hasRecentChanges)
-                .forEach((b, idx) => {
-                    console.log(
-                        `   ${idx + 1}. ${b.name || b.id}: ${b.recentChangesCount} изменений` +
-                        (b.lastChangeTime ? ` (${b.lastChangeTime})` : '')
-                    );
-                });
+            changedBranches.forEach((b, idx) => {
+                console.log(
+                    `   ${idx + 1}. ${b.name || b.id}: ${b.recentChangesCount} изменений` +
+                    (b.lastChangeTime ? ` (${b.lastChangeTime})` : '')
+                );
+            });
         } else {
             console.log(`\n✨ За последние 24 часа изменений не обнаружено`);
+        }
+
+        // Отправка отчёта в Telegram
+        if (telegram) {
+            console.log(`\n📤 Отправляем отчёт в Telegram...`);
+            await sendCheckReport(processed, withRecentChanges, changedBranches);
+            console.log(`✅ Отчёт отправлен!`);
         }
 
     } catch (error: any) {
@@ -140,6 +187,10 @@ const isMainModule = process.argv[1] && (
 );
 
 if (isMainModule) {
+    // Парсинг аргументов
+    const args = process.argv.slice(2);
+    const useTelegram = args.includes("--telegram") || args.includes("-t");
+
     // Обработка сигналов завершения
     const handleShutdown = async (signal: string) => {
         if (isShuttingDown) return;
@@ -161,7 +212,7 @@ if (isMainModule) {
     process.on('SIGINT', () => handleShutdown('SIGINT'));
     process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
-    checkAllRecentChanges()
+    checkAllRecentChanges({ telegram: useTelegram })
         .then(() => {
             console.log("\n✅ Готово!");
             process.exit(0);
