@@ -24,6 +24,7 @@ export type YandexBranch = {
     name?: string;
     address?: string;
     status?: string;
+    hours?: string; // режим работы (текст)
     url?: string;
     changesUrl?: string;
     hasRecentChanges?: boolean; // есть ли изменения за последние 24 часа
@@ -788,11 +789,22 @@ export async function fetchBranches(options: FetchBranchesOptions | string = {})
 
                     if (Array.isArray(items)) {
                         result.branches = items.map(function (item) {
+                            // Извлечение часов работы из разных возможных полей
+                            let hours = undefined;
+                            if (item && item.workingTime) {
+                                hours = typeof item.workingTime === "string" ? item.workingTime : item.workingTime.text;
+                            } else if (item && item.hours) {
+                                hours = typeof item.hours === "string" ? item.hours : item.hours.text;
+                            } else if (item && item.workingHours) {
+                                hours = typeof item.workingHours === "string" ? item.workingHours : item.workingHours.text;
+                            }
+
                             return {
                                 id: (item && item.id) || (item && item.branchId) || (item && item.businessId) || undefined,
                                 name: (item && item.name) || (item && item.title) || undefined,
                                 address: (item && item.address && item.address.text) || (item && item.address) || undefined,
                                 status: (item && item.status) || (item && item.workingStatus) || undefined,
+                                hours: hours,
                                 url: (item && item.link) || (item && item.url) || undefined,
                                 raw: item || undefined,
                             };
@@ -837,6 +849,12 @@ export async function fetchBranches(options: FetchBranchesOptions | string = {})
                                 el.querySelector('[data-tid="branch-status"]') ||
                                 el.querySelector('[data-testid="branch-status"]') ||
                                 el.querySelector('[class*="Status"]');
+                            const hoursEl =
+                                el.querySelector(".CompanyInfoCard-WorkingTime") ||
+                                el.querySelector('[data-tid="branch-hours"]') ||
+                                el.querySelector('[data-testid="branch-hours"]') ||
+                                el.querySelector('[class*="WorkingTime"]') ||
+                                el.querySelector('[class*="Hours"]');
                             const linkEl = el.querySelector("a[href]");
 
                             let id = undefined;
@@ -855,6 +873,7 @@ export async function fetchBranches(options: FetchBranchesOptions | string = {})
                                 name: (nameEl && nameEl.textContent && nameEl.textContent.trim()) || undefined,
                                 address: (addressEl && addressEl.textContent && addressEl.textContent.trim()) || undefined,
                                 status: (statusEl && statusEl.textContent && statusEl.textContent.trim()) || undefined,
+                                hours: (hoursEl && hoursEl.textContent && hoursEl.textContent.trim()) || undefined,
                                 url: (linkEl && linkEl.getAttribute("href")) || undefined,
                                 raw: undefined,
                             };

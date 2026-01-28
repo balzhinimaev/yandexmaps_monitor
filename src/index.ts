@@ -2,8 +2,11 @@ import { runOnce } from "./run.js";
 
 // Экспорты для использования в других модулях
 export { runOnce } from "./run.js";
+export { runMonitor } from "./monitor.js";
 export { fetchAllChanges } from "./fetch-changes.js";
 export { checkAllRecentChanges } from "./check-recent-changes.js";
+export { reportAllOk, reportDiffs } from "./report.js";
+export { sendMessage, sendChunks } from "./telegram.js";
 export {
     runAnalysis,
     analyzeChanges,
