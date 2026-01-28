@@ -59,7 +59,7 @@ async function sendCheckReport(
 }
 
 export async function checkAllRecentChanges(options: { telegram?: boolean } = {}) {
-    const { telegram = false } = options;
+    const { telegram = true } = options; // по умолчанию отправляем в Telegram
     try {
         const authOk = await ensureYandexAuth();
         if (!authOk) {

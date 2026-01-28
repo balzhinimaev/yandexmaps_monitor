@@ -3,6 +3,7 @@
 
 import { promises as fs } from "fs";
 import { ensureYandexAuth, closeBrowser, fetchBranchChangeHistory, type YandexBranch, type BranchChangeHistory } from "./yandex.js";
+import { sendMessage } from "./telegram.js";
 import pLimit from "p-limit";
 
 const BRANCHES_FILE = "./data/branches.json";
@@ -45,7 +46,36 @@ function keepRecentChanges(history: BranchChangeHistory): BranchChangeHistory {
     };
 }
 
-export async function fetchAllChanges() {
+/**
+ * Отправка отчёта о сборе изменений в Telegram
+ */
+async function sendFetchReport(
+    totalBranches: number,
+    totalChanges: number,
+    branchesWithChanges: number,
+    top5: { branchId: string; name?: string; totalChanges: number }[]
+): Promise<void> {
+    const lines = [
+        `📊 Сбор изменений завершён`,
+        ``,
+        `Филиалов проверено: ${totalBranches}`,
+        `Всего изменений: ${totalChanges}`,
+        `Филиалов с изменениями: ${branchesWithChanges}`,
+    ];
+
+    if (top5.length > 0) {
+        lines.push(``);
+        lines.push(`🏆 Топ по изменениям:`);
+        for (const item of top5) {
+            lines.push(`• ${item.name || item.branchId}: ${item.totalChanges}`);
+        }
+    }
+
+    await sendMessage(lines.join("\n"));
+}
+
+export async function fetchAllChanges(options: { telegram?: boolean } = {}) {
+    const { telegram = true } = options; // по умолчанию отправляем
     try {
         const authOk = await ensureYandexAuth();
         if (!authOk) {
@@ -147,6 +177,17 @@ export async function fetchAllChanges() {
                 if (change.oldValue) console.log(`       Было: ${change.oldValue.substring(0, 100)}...`);
                 if (change.newValue) console.log(`       Стало: ${change.newValue.substring(0, 100)}...`);
             });
+        }
+
+        // Отправка в Telegram
+        if (telegram) {
+            console.log(`\n📤 Отправляем отчёт в Telegram...`);
+            const top5Data = top5.map(h => {
+                const branch = branches.find(b => b.id === h.branchId);
+                return { branchId: h.branchId, name: branch?.name, totalChanges: h.totalChanges };
+            });
+            await sendFetchReport(allChanges.length, totalChanges, branchesWithChangesCount, top5Data);
+            console.log(`✅ Отчёт отправлен!`);
         }
 
     } catch (error: any) {

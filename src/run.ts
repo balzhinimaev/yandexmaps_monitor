@@ -1,7 +1,30 @@
 import { promises as fs } from "fs";
-import { ensureYandexAuth, closeBrowser, fetchBranches } from "./yandex.js";
+import { ensureYandexAuth, closeBrowser, fetchBranches, type YandexBranch } from "./yandex.js";
+import { sendMessage } from "./telegram.js";
 
-export async function runOnce() {
+/**
+ * Отправка отчёта о сборе филиалов в Telegram
+ */
+async function sendRunReport(branches: YandexBranch[]): Promise<void> {
+    const withChanges = branches.filter(b => b.changesHistory && b.changesHistory.length > 0);
+    const totalChanges = withChanges.reduce((sum, b) => sum + (b.changesHistory?.length || 0), 0);
+
+    const lines = [
+        `📦 Сбор филиалов завершён`,
+        ``,
+        `Всего филиалов: ${branches.length}`,
+        `С историей изменений: ${withChanges.length}`,
+        `Всего изменений: ${totalChanges}`,
+        ``,
+        `💾 Данные сохранены в branches.json`,
+    ];
+
+    await sendMessage(lines.join("\n"));
+}
+
+export async function runOnce(options: { telegram?: boolean } = {}) {
+    const { telegram = true } = options; // по умолчанию отправляем
+
     try {
         const authOk = await ensureYandexAuth();
         if (!authOk) {
@@ -23,6 +46,13 @@ export async function runOnce() {
         await fs.mkdir("./data", { recursive: true });
         await fs.writeFile("./data/branches.json", JSON.stringify(branches, null, 2), "utf8");
         console.log(`\n💾 Данные филиалов сохранены в ./data/branches.json`);
+
+        // Отправка в Telegram
+        if (telegram) {
+            console.log(`\n📤 Отправляем отчёт в Telegram...`);
+            await sendRunReport(branches);
+            console.log(`✅ Отчёт отправлен!`);
+        }
     } finally {
         await closeBrowser();
     }

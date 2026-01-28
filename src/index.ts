@@ -30,8 +30,9 @@ export {
 } from "./yandex.js";
 
 async function doRun() {
+    const useTelegram = !process.argv.includes("--no-telegram");
     try {
-        await runOnce();
+        await runOnce({ telegram: useTelegram });
     } catch (e: any) {
         console.error(`❗ Ошибка: ${e?.message || e}`);
         process.exitCode = 1;
