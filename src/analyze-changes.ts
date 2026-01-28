@@ -1,11 +1,12 @@
 import { promises as fs } from "fs";
 import puppeteer from "puppeteer";
 import type { YandexBranch, SimpleChange } from "./yandex.js";
+import { sendMessage } from "./telegram.js";
 
 // Парсер аргументов командной строки
 function parseArgs() {
     const args = process.argv.slice(2);
-    const options: { pdf?: string; file?: string } = {};
+    const options: { pdf?: string; file?: string; telegram?: boolean } = {};
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -15,6 +16,8 @@ function parseArgs() {
         } else if (arg === "--file" || arg === "-f") {
             options.file = args[i + 1];
             i++;
+        } else if (arg === "--telegram" || arg === "-t") {
+            options.telegram = true;
         } else if (!arg.startsWith("-")) {
             // Если аргумент не начинается с -, считаем его путем к файлу
             options.file = arg;
@@ -22,6 +25,43 @@ function parseArgs() {
     }
 
     return options;
+}
+
+/**
+ * Отправка сводки анализа в Telegram
+ */
+export async function sendAnalysisSummary(stats: ChangeStats): Promise<void> {
+    const lines = [
+        `📊 *Статистика изменений филиалов*`,
+        ``,
+        `📁 Всего филиалов: ${stats.totalBranches}`,
+        `📝 Всего изменений: ${stats.totalChanges}`,
+        ``,
+        `⏱️ *По периодам:*`,
+        `   За 24ч: ${stats.changesLast24h} (${stats.branchesWithRecentChanges24h} филиалов)`,
+        `   За 7д: ${stats.changesLast7d} (${stats.branchesWithRecentChanges7d} филиалов)`,
+        `   За 30д: ${stats.changesLast30d}`,
+    ];
+
+    // Топ-5 категорий
+    const categoryKeys = Object.keys(stats.changesByCategory) as CategoryKey[];
+    const sortedCategories = categoryKeys
+        .map((key) => ({ key, catStats: stats.changesByCategory[key] }))
+        .filter((c) => c.catStats.totalChanges > 0)
+        .sort((a, b) => b.catStats.totalChanges - a.catStats.totalChanges)
+        .slice(0, 5);
+
+    if (sortedCategories.length > 0) {
+        lines.push(``);
+        lines.push(`📋 *Топ категорий:*`);
+        for (const { catStats } of sortedCategories) {
+            const percent = ((catStats.totalChanges / stats.totalChanges) * 100).toFixed(0);
+            lines.push(`   ${catStats.name}: ${catStats.totalChanges} (${percent}%)`);
+        }
+    }
+
+    const message = lines.join("\n");
+    await sendMessage(message);
 }
 
 const BRANCHES_FILE = "./data/branches.json";
@@ -990,7 +1030,7 @@ export function getBranchesByCategory(branches: YandexBranch[], category: Catego
 /**
  * Главная функция для запуска анализа
  */
-export async function runAnalysis(filePath?: string, options?: { pdf?: string }): Promise<ChangeStats> {
+export async function runAnalysis(filePath?: string, options?: { pdf?: string; telegram?: boolean }): Promise<ChangeStats> {
     console.log("📂 Загружаем данные филиалов...");
     const branches = await loadBranches(filePath);
     console.log(`   Загружено ${branches.length} филиалов`);
@@ -1002,6 +1042,13 @@ export async function runAnalysis(filePath?: string, options?: { pdf?: string })
     if (options?.pdf) {
         console.log("\n📄 Генерируем PDF отчет...");
         await generatePDFReport(stats, branches, options.pdf);
+    }
+
+    // Отправка в Telegram если указан флаг
+    if (options?.telegram) {
+        console.log("\n📤 Отправляем сводку в Telegram...");
+        await sendAnalysisSummary(stats);
+        console.log("✅ Сводка отправлена!");
     }
 
     // Дополнительно: выводим филиалы с недавними изменениями
@@ -1038,7 +1085,7 @@ const isDirectRun = (() => {
 
 if (isDirectRun) {
     const options = parseArgs();
-    runAnalysis(options.file, { pdf: options.pdf })
+    runAnalysis(options.file, { pdf: options.pdf, telegram: options.telegram })
         .then(() => {
             process.exit(0);
         })

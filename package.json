@@ -11,6 +11,8 @@
     "check:recent": "npm run build && node dist/check-recent-changes.js",
     "analyze": "npm run build && node dist/analyze-changes.js",
     "analyze:pdf": "npm run build && node dist/analyze-changes.js --pdf ./analysis-report.pdf",
+    "analyze:telegram": "npm run build && node dist/analyze-changes.js --telegram",
+    "analyze:full": "npm run build && node dist/analyze-changes.js --pdf ./analysis-report.pdf --telegram",
     "monitor": "npm run build && node dist/monitor.js",
     "monitor:dry": "npm run build && node dist/monitor.js --dry-run --verbose",
     "test:telegram": "tsx src/test-telegram.ts",
