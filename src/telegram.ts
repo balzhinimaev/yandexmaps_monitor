@@ -1,4 +1,5 @@
 import { Telegraf } from "telegraf";
+import { createReadStream } from "fs";
 import { env, CHAT_ID } from "./config.js";
 
 export const bot = env.TELEGRAM_BOT_TOKEN
@@ -13,6 +14,21 @@ export async function sendMessage(text: string) {
     return bot.telegram.sendMessage(CHAT_ID as any, text, {
         link_preview_options: { is_disabled: true },
     });
+}
+
+/**
+ * Отправка файла (документа) в Telegram
+ */
+export async function sendDocument(filePath: string, caption?: string) {
+    if (!bot) {
+        console.warn("⚠️  Telegram bot не настроен, файл не отправлен");
+        return;
+    }
+    return bot.telegram.sendDocument(
+        CHAT_ID as any,
+        { source: createReadStream(filePath) },
+        { caption }
+    );
 }
 
 // Утилита: разбиение длинных сообщений по лимиту 4096

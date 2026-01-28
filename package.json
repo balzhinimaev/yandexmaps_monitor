@@ -19,6 +19,7 @@
     "report": "tsx src/send-report.ts",
     "report:ok": "tsx src/send-report.ts ok",
     "report:diff": "tsx src/send-report.ts diff",
+    "report:pdf": "tsx src/send-report.ts pdf",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",

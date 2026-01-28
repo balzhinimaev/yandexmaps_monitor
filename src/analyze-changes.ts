@@ -1,7 +1,7 @@
 import { promises as fs } from "fs";
 import puppeteer from "puppeteer";
 import type { YandexBranch, SimpleChange } from "./yandex.js";
-import { sendMessage } from "./telegram.js";
+import { sendMessage, sendDocument } from "./telegram.js";
 
 // Парсер аргументов командной строки
 function parseArgs() {
@@ -1042,9 +1042,16 @@ export async function runAnalysis(filePath?: string, options?: { pdf?: string; t
     if (options?.pdf) {
         console.log("\n📄 Генерируем PDF отчет...");
         await generatePDFReport(stats, branches, options.pdf);
+
+        // Отправляем PDF в Telegram если включён флаг telegram
+        if (options?.telegram) {
+            console.log("📤 Отправляем PDF в Telegram...");
+            await sendDocument(options.pdf, `📊 Отчёт по изменениям филиалов\n${new Date().toLocaleDateString("ru-RU")}`);
+            console.log("✅ PDF отправлен!");
+        }
     }
 
-    // Отправка в Telegram если указан флаг
+    // Отправка текстовой сводки в Telegram если указан флаг
     if (options?.telegram) {
         console.log("\n📤 Отправляем сводку в Telegram...");
         await sendAnalysisSummary(stats);
