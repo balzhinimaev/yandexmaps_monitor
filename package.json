@@ -20,6 +20,8 @@
     "report:ok": "tsx src/send-report.ts ok",
     "report:diff": "tsx src/send-report.ts diff",
     "report:pdf": "tsx src/send-report.ts pdf",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -44,6 +46,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/node-cron": "^3.0.11",
     "@types/puppeteer": "^5.4.7",
@@ -51,7 +54,9 @@
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
+    "jest": "^30.2.0",
     "prettier": "^3.2.5",
+    "ts-jest": "^29.4.6",
     "tsx": "^4.19.0",
     "typescript": "^5.6.3"
   }

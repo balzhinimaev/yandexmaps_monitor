@@ -5,34 +5,19 @@ import { promises as fs } from "fs";
 import { ensureYandexAuth, closeBrowser, checkRecentChanges, type YandexBranch } from "./yandex.js";
 import { sendMessage } from "./telegram.js";
 import pLimit from "p-limit";
+import {
+    isPublished,
+    compareBranchLists,
+    formatChangeTime,
+    createSnapshot,
+    type BranchSnapshot,
+} from "./branch-utils.js";
 
 const BRANCHES_FILE = "./data/branches.json";
 const BRANCHES_SNAPSHOT_FILE = "./data/branches-snapshot.json"; // для сравнения количества
 
 // Ограничиваем количество одновременных запросов
 const limit = pLimit(3);
-
-// Статусы, которые считаем "опубликованными"
-const PUBLISHED_STATUSES = ["Опубликовано", "published", "active"];
-
-/**
- * Проверка, является ли филиал опубликованным
- */
-function isPublished(branch: YandexBranch): boolean {
-    if (!branch.status) return true; // если статус не указан, считаем опубликованным
-    return PUBLISHED_STATUSES.some(s => 
-        branch.status!.toLowerCase().includes(s.toLowerCase())
-    );
-}
-
-/**
- * Тип для снапшота филиалов
- */
-type BranchSnapshot = {
-    id: string;
-    name?: string;
-    address?: string;
-};
 
 /**
  * Загрузка предыдущего снапшота филиалов
@@ -50,31 +35,8 @@ async function loadPreviousSnapshot(): Promise<BranchSnapshot[]> {
  * Сохранение текущего снапшота филиалов
  */
 async function saveSnapshot(branches: YandexBranch[]): Promise<void> {
-    const snapshot: BranchSnapshot[] = branches
-        .filter(b => b.id && isPublished(b))
-        .map(b => ({
-            id: b.id!,
-            name: b.name,
-            address: b.address
-        }));
+    const snapshot = createSnapshot(branches);
     await fs.writeFile(BRANCHES_SNAPSHOT_FILE, JSON.stringify(snapshot, null, 2), "utf8");
-}
-
-/**
- * Сравнение списков филиалов
- */
-function compareBranchLists(
-    previous: BranchSnapshot[],
-    current: YandexBranch[]
-): { added: YandexBranch[]; removed: BranchSnapshot[] } {
-    const previousIds = new Set(previous.map(b => b.id));
-    const currentPublished = current.filter(b => b.id && isPublished(b));
-    const currentIds = new Set(currentPublished.map(b => b.id));
-
-    const added = currentPublished.filter(b => b.id && !previousIds.has(b.id));
-    const removed = previous.filter(b => !currentIds.has(b.id));
-
-    return { added, removed };
 }
 
 async function updateBranchInFile(branches: YandexBranch[], index: number, updates: Partial<YandexBranch>) {
@@ -85,15 +47,6 @@ async function updateBranchInFile(branches: YandexBranch[], index: number, updat
 
 // Флаг для отслеживания прерывания
 let isShuttingDown = false;
-
-/**
- * Форматирование даты из "28-01-2026 · 17:47" в "28-01-2026 - 17:47"
- */
-function formatChangeTime(timestamp: string | undefined): string {
-    if (!timestamp) return "";
-    // Заменяем " · " на " - " для более компактного отображения
-    return timestamp.replace(/\s*·\s*/g, " - ");
-}
 
 /**
  * Отправка отчёта о проверке в Telegram
