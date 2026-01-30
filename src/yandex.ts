@@ -30,6 +30,7 @@ export type YandexBranch = {
     hasRecentChanges?: boolean; // есть ли изменения за последние 24 часа
     recentChangesCount?: number; // количество изменений за последние 24 часа
     lastChangeTime?: string; // время последнего изменения
+    recentChangeTypes?: string[]; // названия типов изменений за последние 24 часа
     changesHistory?: SimpleChange[]; // история изменений (название + дата)
     raw?: Record<string, unknown>;
 };
@@ -405,6 +406,7 @@ export async function checkRecentChanges(
     hasRecentChanges: boolean;
     recentChangesCount: number;
     lastChangeTime?: string;
+    recentChangeTypes?: string[]; // названия типов изменений за 24ч
 }> {
     const page = await newPage();
 
@@ -431,7 +433,8 @@ export async function checkRecentChanges(
             const requestBlocks = Array.from(document.querySelectorAll(".RequestChanges.CompanyChangesPage-Request"));
 
             let recentCount = 0;
-            let lastChangeTime;
+            let lastChangeTime: string | undefined;
+            const recentChangeTypes: string[] = [];
 
             for (const requestBlock of requestBlocks) {
                 const timeEl = requestBlock.querySelector(".RequestChanges-RequestTime");
@@ -446,6 +449,16 @@ export async function checkRecentChanges(
 
                 if (changeDate >= oneDayAgo) {
                     recentCount++;
+
+                    // Собираем названия изменений из этого блока
+                    const changeElements = Array.from(requestBlock.querySelectorAll(".CompanyChanges-Change"));
+                    for (const changeEl of changeElements) {
+                        const titleEl = changeEl.querySelector(".CompanyChanges-ChangeTitle");
+                        const title = titleEl?.textContent?.trim();
+                        if (title && !recentChangeTypes.includes(title)) {
+                            recentChangeTypes.push(title);
+                        }
+                    }
                 }
             }
 
@@ -453,6 +466,7 @@ export async function checkRecentChanges(
                 hasRecentChanges: recentCount > 0,
                 recentChangesCount: recentCount,
                 lastChangeTime,
+                recentChangeTypes,
             };
         });
 

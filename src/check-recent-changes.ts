@@ -21,6 +21,15 @@ async function updateBranchInFile(branches: YandexBranch[], index: number, updat
 let isShuttingDown = false;
 
 /**
+ * Форматирование даты из "28-01-2026 · 17:47" в "28-01-2026 - 17:47"
+ */
+function formatChangeTime(timestamp: string | undefined): string {
+    if (!timestamp) return "";
+    // Заменяем " · " на " - " для более компактного отображения
+    return timestamp.replace(/\s*·\s*/g, " - ");
+}
+
+/**
  * Отправка отчёта о проверке в Telegram
  */
 async function sendCheckReport(
@@ -47,14 +56,27 @@ async function sendCheckReport(
             const name = branch.name || branch.id || "?";
             const address = branch.address || "";
             const count = branch.recentChangesCount || 0;
-            const time = branch.lastChangeTime ? ` (${branch.lastChangeTime})` : "";
+            const time = branch.lastChangeTime ? formatChangeTime(branch.lastChangeTime) : "";
+            const changeTypes = branch.recentChangeTypes || [];
 
             lines.push(``);
             lines.push(`• ${name}`);
             if (address) {
                 lines.push(`  📍 ${address}`);
             }
-            lines.push(`  ${count} изм.${time}`);
+            lines.push(`  ${count} изм.${time ? ` (${time})` : ""}`);
+
+            // Показываем типы изменений, если есть
+            if (changeTypes.length > 0) {
+                // Ограничиваем до 5 типов изменений
+                const displayTypes = changeTypes.slice(0, 5);
+                for (const changeType of displayTypes) {
+                    lines.push(`    ↳ ${changeType}`);
+                }
+                if (changeTypes.length > 5) {
+                    lines.push(`    ↳ ... и ещё ${changeTypes.length - 5}`);
+                }
+            }
         }
 
         if (branchesWithChanges.length > 15) {
@@ -117,14 +139,18 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
                     await updateBranchInFile(branches, index, {
                         hasRecentChanges: result.hasRecentChanges,
                         recentChangesCount: result.recentChangesCount,
-                        lastChangeTime: result.lastChangeTime
+                        lastChangeTime: result.lastChangeTime,
+                        recentChangeTypes: result.recentChangeTypes
                     });
 
                     if (result.hasRecentChanges) {
                         withRecentChanges++;
+                        const changeTypesStr = result.recentChangeTypes?.length
+                            ? ` [${result.recentChangeTypes.slice(0, 3).join(", ")}${result.recentChangeTypes.length > 3 ? "..." : ""}]`
+                            : "";
                         console.log(
                             `✅ [${processed}/${branchesWithChanges.length}] ${branch.name || branch.id}: ` +
-                            `${result.recentChangesCount} изменений за 24ч (последнее: ${result.lastChangeTime})`
+                            `${result.recentChangesCount} изменений за 24ч (последнее: ${result.lastChangeTime})${changeTypesStr}`
                         );
                     } else {
                         console.log(
@@ -164,9 +190,13 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
         if (withRecentChanges > 0) {
             console.log(`\n🔥 Филиалы с изменениями за последние 24 часа:`);
             changedBranches.forEach((b, idx) => {
+                const changeTypesStr = b.recentChangeTypes?.length
+                    ? `\n      Изменения: ${b.recentChangeTypes.join(", ")}`
+                    : "";
                 console.log(
                     `   ${idx + 1}. ${b.name || b.id}: ${b.recentChangesCount} изменений` +
-                    (b.lastChangeTime ? ` (${b.lastChangeTime})` : '')
+                    (b.lastChangeTime ? ` (${b.lastChangeTime})` : '') +
+                    changeTypesStr
                 );
             });
         } else {
