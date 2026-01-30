@@ -7,9 +7,75 @@ import { sendMessage } from "./telegram.js";
 import pLimit from "p-limit";
 
 const BRANCHES_FILE = "./data/branches.json";
+const BRANCHES_SNAPSHOT_FILE = "./data/branches-snapshot.json"; // для сравнения количества
 
 // Ограничиваем количество одновременных запросов
 const limit = pLimit(3);
+
+// Статусы, которые считаем "опубликованными"
+const PUBLISHED_STATUSES = ["Опубликовано", "published", "active"];
+
+/**
+ * Проверка, является ли филиал опубликованным
+ */
+function isPublished(branch: YandexBranch): boolean {
+    if (!branch.status) return true; // если статус не указан, считаем опубликованным
+    return PUBLISHED_STATUSES.some(s => 
+        branch.status!.toLowerCase().includes(s.toLowerCase())
+    );
+}
+
+/**
+ * Тип для снапшота филиалов
+ */
+type BranchSnapshot = {
+    id: string;
+    name?: string;
+    address?: string;
+};
+
+/**
+ * Загрузка предыдущего снапшота филиалов
+ */
+async function loadPreviousSnapshot(): Promise<BranchSnapshot[]> {
+    try {
+        const data = await fs.readFile(BRANCHES_SNAPSHOT_FILE, "utf8");
+        return JSON.parse(data);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Сохранение текущего снапшота филиалов
+ */
+async function saveSnapshot(branches: YandexBranch[]): Promise<void> {
+    const snapshot: BranchSnapshot[] = branches
+        .filter(b => b.id && isPublished(b))
+        .map(b => ({
+            id: b.id!,
+            name: b.name,
+            address: b.address
+        }));
+    await fs.writeFile(BRANCHES_SNAPSHOT_FILE, JSON.stringify(snapshot, null, 2), "utf8");
+}
+
+/**
+ * Сравнение списков филиалов
+ */
+function compareBranchLists(
+    previous: BranchSnapshot[],
+    current: YandexBranch[]
+): { added: YandexBranch[]; removed: BranchSnapshot[] } {
+    const previousIds = new Set(previous.map(b => b.id));
+    const currentPublished = current.filter(b => b.id && isPublished(b));
+    const currentIds = new Set(currentPublished.map(b => b.id));
+
+    const added = currentPublished.filter(b => b.id && !previousIds.has(b.id));
+    const removed = previous.filter(b => !currentIds.has(b.id));
+
+    return { added, removed };
+}
 
 async function updateBranchInFile(branches: YandexBranch[], index: number, updates: Partial<YandexBranch>) {
     branches[index] = { ...branches[index], ...updates };
@@ -35,11 +101,17 @@ function formatChangeTime(timestamp: string | undefined): string {
 async function sendCheckReport(
     total: number,
     withChanges: number,
-    branchesWithChanges: YandexBranch[]
+    branchesWithChanges: YandexBranch[],
+    addedBranches: YandexBranch[],
+    removedBranches: BranchSnapshot[],
+    previousTotal: number
 ): Promise<void> {
     const lines: string[] = [];
 
-    if (withChanges === 0) {
+    // Заголовок в зависимости от наличия изменений
+    const hasAnyChanges = withChanges > 0 || addedBranches.length > 0 || removedBranches.length > 0;
+    
+    if (!hasAnyChanges) {
         lines.push(`✅ Проверка завершена`);
         lines.push(``);
         lines.push(`Проверено филиалов: ${total}`);
@@ -48,40 +120,88 @@ async function sendCheckReport(
         lines.push(`⚠️ Обнаружены изменения за 24ч`);
         lines.push(``);
         lines.push(`Проверено филиалов: ${total}`);
-        lines.push(`С изменениями: ${withChanges}`);
-        lines.push(``);
-        lines.push(`📋 Филиалы с изменениями:`);
+        
+        // Показываем изменение количества филиалов
+        if (previousTotal > 0 && previousTotal !== total) {
+            const diff = total - previousTotal;
+            const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
+            lines.push(`Было филиалов: ${previousTotal} → стало: ${total} (${diffStr})`);
+        }
+        
+        if (withChanges > 0) {
+            lines.push(`С изменениями: ${withChanges}`);
+        }
 
-        for (const branch of branchesWithChanges.slice(0, 15)) {
-            const name = branch.name || branch.id || "?";
-            const address = branch.address || "";
-            const count = branch.recentChangesCount || 0;
-            const time = branch.lastChangeTime ? formatChangeTime(branch.lastChangeTime) : "";
-            const changeTypes = branch.recentChangeTypes || [];
-
+        // Новые филиалы
+        if (addedBranches.length > 0) {
             lines.push(``);
-            lines.push(`• ${name}`);
-            if (address) {
-                lines.push(`  📍 ${address}`);
+            lines.push(`🆕 Новые филиалы (${addedBranches.length}):`);
+            for (const branch of addedBranches.slice(0, 10)) {
+                const name = branch.name || branch.id || "?";
+                const address = branch.address || "";
+                lines.push(`  ➕ ${name}`);
+                if (address) {
+                    lines.push(`     📍 ${address}`);
+                }
             }
-            lines.push(`  ${count} изм.${time ? ` (${time})` : ""}`);
-
-            // Показываем типы изменений, если есть
-            if (changeTypes.length > 0) {
-                // Ограничиваем до 5 типов изменений
-                const displayTypes = changeTypes.slice(0, 5);
-                for (const changeType of displayTypes) {
-                    lines.push(`    ↳ ${changeType}`);
-                }
-                if (changeTypes.length > 5) {
-                    lines.push(`    ↳ ... и ещё ${changeTypes.length - 5}`);
-                }
+            if (addedBranches.length > 10) {
+                lines.push(`  ... и ещё ${addedBranches.length - 10}`);
             }
         }
 
-        if (branchesWithChanges.length > 15) {
+        // Удалённые филиалы
+        if (removedBranches.length > 0) {
             lines.push(``);
-            lines.push(`... и ещё ${branchesWithChanges.length - 15} филиалов`);
+            lines.push(`🗑 Убыли филиалы (${removedBranches.length}):`);
+            for (const branch of removedBranches.slice(0, 10)) {
+                const name = branch.name || branch.id || "?";
+                const address = branch.address || "";
+                lines.push(`  ➖ ${name}`);
+                if (address) {
+                    lines.push(`     📍 ${address}`);
+                }
+            }
+            if (removedBranches.length > 10) {
+                lines.push(`  ... и ещё ${removedBranches.length - 10}`);
+            }
+        }
+
+        // Филиалы с изменениями контента
+        if (withChanges > 0) {
+            lines.push(``);
+            lines.push(`📋 Филиалы с изменениями:`);
+
+            for (const branch of branchesWithChanges.slice(0, 15)) {
+                const name = branch.name || branch.id || "?";
+                const address = branch.address || "";
+                const count = branch.recentChangesCount || 0;
+                const time = branch.lastChangeTime ? formatChangeTime(branch.lastChangeTime) : "";
+                const changeTypes = branch.recentChangeTypes || [];
+
+                lines.push(``);
+                lines.push(`• ${name}`);
+                if (address) {
+                    lines.push(`  📍 ${address}`);
+                }
+                lines.push(`  ${count} изм.${time ? ` (${time})` : ""}`);
+
+                // Показываем типы изменений, если есть
+                if (changeTypes.length > 0) {
+                    // Ограничиваем до 5 типов изменений
+                    const displayTypes = changeTypes.slice(0, 5);
+                    for (const changeType of displayTypes) {
+                        lines.push(`    ↳ ${changeType}`);
+                    }
+                    if (changeTypes.length > 5) {
+                        lines.push(`    ↳ ... и ещё ${changeTypes.length - 5}`);
+                    }
+                }
+            }
+
+            if (branchesWithChanges.length > 15) {
+                lines.push(``);
+                lines.push(`... и ещё ${branchesWithChanges.length - 15} филиалов`);
+            }
         }
     }
 
@@ -104,12 +224,34 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
 
         console.log(`📦 Загружено филиалов: ${branches.length}`);
 
-        // Фильтруем филиалы с changesUrl
+        // Загружаем предыдущий снапшот для сравнения
+        const previousSnapshot = await loadPreviousSnapshot();
+        const previousTotal = previousSnapshot.length;
+        console.log(`📸 Предыдущий снапшот: ${previousTotal} филиалов`);
+
+        // Сравниваем списки
+        const { added: addedBranches, removed: removedBranches } = compareBranchLists(previousSnapshot, branches);
+        
+        if (addedBranches.length > 0) {
+            console.log(`🆕 Новых филиалов: ${addedBranches.length}`);
+            addedBranches.forEach(b => console.log(`   + ${b.name || b.id}`));
+        }
+        if (removedBranches.length > 0) {
+            console.log(`🗑  Убыло филиалов: ${removedBranches.length}`);
+            removedBranches.forEach(b => console.log(`   - ${b.name || b.id}`));
+        }
+
+        // Фильтруем только опубликованные филиалы с changesUrl
         const branchesWithChanges = branches
             .map((branch, index) => ({ branch, index }))
-            .filter(({ branch }) => branch.changesUrl && branch.id);
+            .filter(({ branch }) => branch.changesUrl && branch.id && isPublished(branch));
 
-        console.log(`🔗 Филиалов с changesUrl: ${branchesWithChanges.length}`);
+        const skippedCount = branches.filter(b => b.id && !isPublished(b)).length;
+        if (skippedCount > 0) {
+            console.log(`⏭️  Пропущено закрытых/неопубликованных: ${skippedCount}`);
+        }
+
+        console.log(`🔗 Опубликованных филиалов с changesUrl: ${branchesWithChanges.length}`);
 
         if (branchesWithChanges.length === 0) {
             console.log("⚠️  Нет филиалов с changesUrl. Запустите сначала npm run run:once");
@@ -203,10 +345,21 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
             console.log(`\n✨ За последние 24 часа изменений не обнаружено`);
         }
 
+        // Сохраняем снапшот для следующего сравнения
+        await saveSnapshot(branches);
+        console.log(`\n📸 Снапшот сохранён в ${BRANCHES_SNAPSHOT_FILE}`);
+
         // Отправка отчёта в Telegram
         if (telegram) {
             console.log(`\n📤 Отправляем отчёт в Telegram...`);
-            await sendCheckReport(processed, withRecentChanges, changedBranches);
+            await sendCheckReport(
+                processed,
+                withRecentChanges,
+                changedBranches,
+                addedBranches,
+                removedBranches,
+                previousTotal
+            );
             console.log(`✅ Отчёт отправлен!`);
         }
 
