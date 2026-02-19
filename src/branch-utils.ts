@@ -60,6 +60,35 @@ export function formatChangeTime(timestamp: string | undefined): string {
 }
 
 /**
+ * Нормализация записи времени в diff (например, "8-21,55" -> "8:00–21:55")
+ */
+export function normalizeDiffTimeValue(value: string | undefined): string {
+    if (!value) return "";
+
+    return value.replace(/\b(\d{1,2})\s*[-–]\s*(\d{1,2})(?:\s*,\s*(\d{1,2}))?\b/g, (_match, startHour, endHour, endMinute) => {
+        const start = `${startHour}:00`;
+        const end = `${endHour}:${(endMinute ?? "00").padStart(2, "0")}`;
+        return `${start}–${end}`;
+    });
+}
+
+export function isWorkScheduleTitle(title: string | undefined): boolean {
+    const normalizedTitle = (title || "").toLowerCase();
+    return normalizedTitle.includes("график") || normalizedTitle.includes("режим работы");
+}
+
+export function formatWorkScheduleDiffLines(detail: { oldValue?: string; newValue?: string }): string[] {
+    const lines: string[] = [];
+    if (detail.oldValue) {
+        lines.push(`Было: ${normalizeDiffTimeValue(detail.oldValue)}`);
+    }
+    if (detail.newValue) {
+        lines.push(`Стало: ${normalizeDiffTimeValue(detail.newValue)}`);
+    }
+    return lines;
+}
+
+/**
  * Создание снапшота из списка филиалов
  */
 export function createSnapshot<T extends BranchLike>(branches: T[]): BranchSnapshot[] {
