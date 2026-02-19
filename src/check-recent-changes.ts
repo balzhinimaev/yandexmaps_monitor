@@ -9,6 +9,8 @@ import {
     isPublished,
     compareBranchLists,
     formatChangeTime,
+    isWorkScheduleTitle,
+    formatWorkScheduleDiffLines,
     createSnapshot,
     type BranchSnapshot,
 } from "./branch-utils.js";
@@ -130,6 +132,7 @@ async function sendCheckReport(
                 const count = branch.recentChangesCount || 0;
                 const time = branch.lastChangeTime ? formatChangeTime(branch.lastChangeTime) : "";
                 const changeTypes = branch.recentChangeTypes || [];
+                const details = branch.recentChangeDetails || [];
 
                 lines.push(``);
                 lines.push(`• ${name}`);
@@ -148,6 +151,13 @@ async function sendCheckReport(
                     if (changeTypes.length > 5) {
                         lines.push(`    ↳ ... и ещё ${changeTypes.length - 5}`);
                     }
+                }
+
+                const scheduleDetails = details.filter((detail) => isWorkScheduleTitle(detail.title)).slice(0, 3);
+                for (const detail of scheduleDetails) {
+                    lines.push(`    ↳ ${detail.title}`);
+                    const diffLines = formatWorkScheduleDiffLines(detail);
+                    lines.push(...diffLines.map((line) => `    ${line}`));
                 }
             }
 
@@ -235,7 +245,8 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
                         hasRecentChanges: result.hasRecentChanges,
                         recentChangesCount: result.recentChangesCount,
                         lastChangeTime: result.lastChangeTime,
-                        recentChangeTypes: result.recentChangeTypes
+                        recentChangeTypes: result.recentChangeTypes,
+                        recentChangeDetails: result.recentChangeDetails,
                     });
 
                     if (result.hasRecentChanges) {
@@ -264,7 +275,8 @@ export async function checkAllRecentChanges(options: { telegram?: boolean } = {}
                     // Даже при ошибке сохраняем отсутствие изменений
                     await updateBranchInFile(branches, index, {
                         hasRecentChanges: false,
-                        recentChangesCount: 0
+                        recentChangesCount: 0,
+                        recentChangeDetails: [],
                     });
                 }
             })
@@ -367,4 +379,3 @@ if (isMainModule) {
             process.exit(1);
         });
 }
-

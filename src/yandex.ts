@@ -31,9 +31,34 @@ export type YandexBranch = {
     recentChangesCount?: number; // количество изменений за последние 24 часа
     lastChangeTime?: string; // время последнего изменения
     recentChangeTypes?: string[]; // названия типов изменений за последние 24 часа
+    recentChangeDetails?: RecentChangeDetail[]; // детальные изменения (title + old/new + timestamp)
     changesHistory?: SimpleChange[]; // история изменений (название + дата)
     raw?: Record<string, unknown>;
 };
+
+export type RecentChangeDetail = {
+    title: string;
+    oldValue?: string;
+    newValue?: string;
+    timestamp: string;
+};
+
+/**
+ * Извлекает old/new значения diff из HTML-фрагмента изменения (для unit-тестов)
+ */
+export function parseChangeDiffValuesFromHtml(html: string): Pick<RecentChangeDetail, "oldValue" | "newValue"> {
+    const removeMatch = html.match(/CompanyChanges-ChangeDiffItem_action_remove[^>]*>([\s\S]*?)<\//);
+    const addMatch = html.match(/CompanyChanges-ChangeDiffItem_action_add[^>]*>([\s\S]*?)<\//);
+    const cleanup = (value?: string) => value?.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+
+    const oldValue = cleanup(removeMatch?.[1]);
+    const newValue = cleanup(addMatch?.[1]);
+
+    return {
+        oldValue: oldValue || undefined,
+        newValue: newValue || undefined,
+    };
+}
 
 export type BranchChange = {
     title: string; // название изменения, например "Изменение адреса"
@@ -407,6 +432,7 @@ export async function checkRecentChanges(
     recentChangesCount: number;
     lastChangeTime?: string;
     recentChangeTypes?: string[]; // названия типов изменений за 24ч
+    recentChangeDetails: RecentChangeDetail[];
 }> {
     const page = await newPage();
 
@@ -435,6 +461,12 @@ export async function checkRecentChanges(
             let recentCount = 0;
             let lastChangeTime: string | undefined;
             const recentChangeTypes: string[] = [];
+            const recentChangeDetails: Array<{
+                title: string;
+                oldValue?: string;
+                newValue?: string;
+                timestamp: string;
+            }> = [];
 
             for (const requestBlock of requestBlocks) {
                 const timeEl = requestBlock.querySelector(".RequestChanges-RequestTime");
@@ -454,9 +486,35 @@ export async function checkRecentChanges(
                     const changeElements = Array.from(requestBlock.querySelectorAll(".CompanyChanges-Change"));
                     for (const changeEl of changeElements) {
                         const titleEl = changeEl.querySelector(".CompanyChanges-ChangeTitle");
-                        const title = titleEl?.textContent?.trim();
+                        const title = titleEl?.textContent?.trim() || "";
+
+                        let oldValue: string | undefined;
+                        let newValue: string | undefined;
+
+                        const diffContainer = changeEl.querySelector(".CompanyChanges-ChangeDiff");
+                        if (diffContainer) {
+                            const addEl = diffContainer.querySelector(".CompanyChanges-ChangeDiffItem_action_add");
+                            const removeEl = diffContainer.querySelector(".CompanyChanges-ChangeDiffItem_action_remove");
+
+                            if (addEl) {
+                                newValue = addEl.textContent?.trim();
+                            }
+                            if (removeEl) {
+                                oldValue = removeEl.textContent?.trim();
+                            }
+                        }
+
                         if (title && !recentChangeTypes.includes(title)) {
                             recentChangeTypes.push(title);
+                        }
+
+                        if (title || oldValue || newValue) {
+                            recentChangeDetails.push({
+                                title,
+                                oldValue,
+                                newValue,
+                                timestamp,
+                            });
                         }
                     }
                 }
@@ -467,6 +525,7 @@ export async function checkRecentChanges(
                 recentChangesCount: recentCount,
                 lastChangeTime,
                 recentChangeTypes,
+                recentChangeDetails,
             };
         });
 
@@ -476,6 +535,7 @@ export async function checkRecentChanges(
         return {
             hasRecentChanges: false,
             recentChangesCount: 0,
+            recentChangeDetails: [],
         };
     } finally {
         await page.close();

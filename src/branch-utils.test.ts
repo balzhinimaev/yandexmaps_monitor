@@ -2,6 +2,9 @@ import {
     isPublished,
     compareBranchLists,
     formatChangeTime,
+    normalizeDiffTimeValue,
+    isWorkScheduleTitle,
+    formatWorkScheduleDiffLines,
     createSnapshot,
     PUBLISHED_STATUSES,
     type BranchSnapshot,
@@ -57,6 +60,38 @@ describe("formatChangeTime", () => {
     it("should return string as-is if no · present", () => {
         expect(formatChangeTime("28-01-2026 - 17:47")).toBe("28-01-2026 - 17:47");
         expect(formatChangeTime("test")).toBe("test");
+    });
+});
+
+describe("normalizeDiffTimeValue", () => {
+    it("should normalize non-standard time range", () => {
+        expect(normalizeDiffTimeValue("8-21,55")).toBe("8:00–21:55");
+    });
+
+    it("should keep unrelated text and normalize embedded range", () => {
+        expect(normalizeDiffTimeValue("пн-вс 8-21,55 без выходных")).toBe("пн-вс 8:00–21:55 без выходных");
+    });
+});
+
+describe("work schedule diff helpers", () => {
+    it("detects work schedule titles", () => {
+        expect(isWorkScheduleTitle("Изменение графика работы")).toBe(true);
+        expect(isWorkScheduleTitle("Режим работы филиала")).toBe(true);
+        expect(isWorkScheduleTitle("Изменение телефона")).toBe(false);
+    });
+
+    it("formats Было/Стало lines and normalizes time", () => {
+        expect(
+            formatWorkScheduleDiffLines({
+                oldValue: "Пн-Вс 8-20",
+                newValue: "Пн-Вс 8-21,55",
+            })
+        ).toEqual(["Было: Пн-Вс 8:00–20:00", "Стало: Пн-Вс 8:00–21:55"]);
+    });
+
+    it("degrades gracefully when one value is missing", () => {
+        expect(formatWorkScheduleDiffLines({ newValue: "8-21,55" })).toEqual(["Стало: 8:00–21:55"]);
+        expect(formatWorkScheduleDiffLines({ oldValue: "8-20" })).toEqual(["Было: 8:00–20:00"]);
     });
 });
 
